@@ -1,0 +1,3 @@
+# Configure a real maintainer/team before enabling required CODEOWNER reviews.
+# Independent trusted policy hashes remain required even for a solo repository.
+# Do not put an invented GitHub identity here.

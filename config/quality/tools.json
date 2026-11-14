@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "tools": {
+    "pmd": "7.29.0",
+    "gitleaks": "8.30.1",
+    "checkov": "3.4.5",
+    "trivy": "0.76.2"
+  },
+  "buildImage": "gradle:9.4.1-jdk25@sha256:8e41f079ca18bf00994f0ba7ca5cbfb7b0c2fdafd72bee98e6c3785bd9ac2939",
+  "services": ["catalog", "orders", "inventory"],
+  "unitCoverage": {"LINE": 0.90, "BRANCH": 0.90},
+  "sonarTimeoutSeconds": 600
+}

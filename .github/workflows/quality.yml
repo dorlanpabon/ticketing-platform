@@ -1,0 +1,146 @@
+name: Quality
+
+on:
+  push:
+    branches: [main, release, develop, 'feature/**', 'fix/**', 'chore/**']
+  pull_request_target:
+    branches: [develop, release, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# Never cancel an older push and leave its intermediate commits unchecked.
+concurrency:
+  group: quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static-commits:
+    name: Static commits and branch policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      head: ${{ steps.context.outputs.head }}
+    steps:
+      - name: Checkout trusted policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Validate event and branch path
+        id: context
+        env:
+          RELEASE_FROZEN: ${{ vars.RELEASE_FROZEN }}
+        run: python trusted/scripts/quality/ci_event.py
+      - name: Checkout exact candidate as data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.context.outputs.head }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install verified quality tools
+        run: python trusted/scripts/quality/install_tools.py --destination "$RUNNER_TEMP/quality-tools" --github-path
+      - name: Test trusted quality engine
+        run: python -m unittest discover -s trusted/scripts/quality/tests -v
+      - name: Scan every introduced commit and integration tree
+        env:
+          CANDIDATE_SHA: ${{ steps.context.outputs.head }}
+          BEFORE_SHA: ${{ steps.context.outputs.before }}
+          BASE_SHA: ${{ steps.context.outputs.base }}
+          PULL_NUMBER: ${{ steps.context.outputs.pull }}
+          QUALITY_APPROVED_POLICY_HASH: ${{ vars.QUALITY_APPROVED_POLICY_HASH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--repo candidate --trusted-root trusted scan-range --after "$CANDIDATE_SHA" --output "$RUNNER_TEMP/evidence")
+          if [ -n "$BEFORE_SHA" ]; then args+=(--before "$BEFORE_SHA"); fi
+          if [ -n "$BASE_SHA" ]; then args+=(--base "$BASE_SHA"); fi
+          if [ -n "$PULL_NUMBER" ]; then
+            git -C candidate -c user.name=CI -c user.email=ci@example.invalid merge --no-ff --no-commit "$BASE_SHA"
+            tree=$(git -C candidate write-tree)
+            merge=$(printf 'quality: synthetic integration\n' | git -C candidate -c user.name=CI -c user.email=ci@example.invalid commit-tree "$tree" -p "$CANDIDATE_SHA" -p "$BASE_SHA")
+            args+=(--integration "$merge")
+          fi
+          python trusted/scripts/quality/quality.py "${args[@]}"
+      - name: Upload redacted static evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: static-${{ steps.context.outputs.head }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  unit-build:
+    name: Unit build and coverage
+    needs: static-commits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted build driver
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: trusted
+          persist-credentials: false
+      - name: Checkout candidate data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.static-commits.outputs.head }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and enforce unit gate
+        env:
+          CANDIDATE_SHA: ${{ needs.static-commits.outputs.head }}
+        run: python trusted/scripts/quality/build.py --repo candidate --sha "$CANDIDATE_SHA" --output "$RUNNER_TEMP/unit"
+      - name: Publish unit evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-${{ needs.static-commits.outputs.head }}
+          path: ${{ runner.temp }}/unit
+          if-no-files-found: error
+          retention-days: 14
+
+  sonar-develop:
+    name: Community Sonar develop gate
+    needs: [static-commits, unit-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, ticketing-sonar]
+    timeout-minutes: 90
+    # This environment must permit develop only. Never label a fork runner this way.
+    environment: quality-develop
+    concurrency:
+      group: community-sonar-develop
+      cancel-in-progress: false
+    steps:
+      - name: Checkout exact trusted develop SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+      - name: Build, enforce unit coverage and analyze all three projects
+        env:
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_TOKEN_CATALOG: ${{ secrets.SONAR_TOKEN_CATALOG }}
+          SONAR_TOKEN_ORDERS: ${{ secrets.SONAR_TOKEN_ORDERS }}
+          SONAR_TOKEN_INVENTORY: ${{ secrets.SONAR_TOKEN_INVENTORY }}
+          SONAR_READ_TOKEN: ${{ secrets.SONAR_READ_TOKEN }}
+        run: python scripts/quality/sonar_develop.py
+      - name: Publish exact Sonar evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sonar-${{ github.sha }}
+          path: build/quality/sonar
+          if-no-files-found: error
+          retention-days: 14

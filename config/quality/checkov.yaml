@@ -1,0 +1,8 @@
+quiet: true
+compact: true
+soft-fail: false
+skip-download: true
+framework:
+  - terraform
+  - dockerfile
+  - github_actions

@@ -1,0 +1,98 @@
+import org.gradle.testing.jacoco.tasks.JacocoReport
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+
+subprojects {
+    // Keep the scaffold's report task, but separate mutation testing from unit coverage.
+    tasks.named('jacocoTestReport', JacocoReport) {
+        setDependsOn([tasks.named('test')])
+        executionData.setFrom(layout.buildDirectory.file('jacoco/test.exec'))
+    }
+    if (name in ['model', 'usecase']) {
+        pitest {
+            mutationThreshold = 80
+            coverageThreshold = 90
+            threads = 2
+            outputFormats = ['XML', 'HTML']
+            timestampedReports = false
+        }
+    }
+    def runtime = sourceSets.main.runtimeClasspath
+    def destination = layout.buildDirectory.file('quality/module-classpath.txt')
+    tasks.register('exportQualityClasspath') {
+        dependsOn tasks.named('classes')
+        inputs.files(runtime)
+        outputs.file(destination)
+        doLast {
+            def target = destination.get().asFile
+            target.parentFile.mkdirs()
+            target.text = runtime.files.findAll { it.exists() }.collect { it.absolutePath }.join(File.pathSeparator)
+        }
+    }
+}
+
+def classpathFiles = subprojects.collect { it.layout.buildDirectory.file('quality/module-classpath.txt') }
+def classpathDestination = layout.buildDirectory.file('quality/auxclasspath.txt')
+tasks.register('qualityClasspath') {
+    dependsOn subprojects.collect { it.tasks.named('exportQualityClasspath') }
+    doLast {
+        def target = classpathDestination.get().asFile
+        target.parentFile.mkdirs()
+        def paths = classpathFiles.collectMany { it.get().asFile.text.split(java.util.regex.Pattern.quote(File.pathSeparator)).toList() }.unique().sort()
+        target.text = paths.join(File.pathSeparator)
+    }
+}
+
+tasks.named('jacocoMergedReport', JacocoReport) {
+    setDependsOn(subprojects.collect { it.tasks.named('test') })
+    executionData.setFrom(subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
+    reports {
+        xml.required = true
+        html.required = true
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/merged/jacoco.xml')
+    }
+}
+
+tasks.register('mutationGate') {
+    group = 'verification'
+    description = 'Verify domain/model and domain/usecase mutation scores (minimum 80 percent).'
+    dependsOn project(':model').tasks.named('pitest'), project(':usecase').tasks.named('pitest')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('mutationGate'), tasks.named('unitCoverageGate')
+}
+
+// The scaffold adds PIT dependencies after project evaluation. Override only that
+// coupling after it finishes; preserve its generated tasks and reports.
+gradle.projectsEvaluated {
+    rootProject.subprojects.each { module ->
+        def report = module.tasks.named('jacocoTestReport', JacocoReport).get()
+        report.setDependsOn([module.tasks.named('test')])
+        report.executionData.setFrom(module.layout.buildDirectory.file('jacoco/test.exec'))
+    }
+    def merged = rootProject.tasks.named('jacocoMergedReport', JacocoReport).get()
+    merged.setDependsOn(rootProject.subprojects.collect { it.tasks.named('test') })
+    merged.executionData.setFrom(rootProject.subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
+}
+
+tasks.register('unitCoverageGate', JacocoCoverageVerification) {
+    dependsOn tasks.named('jacocoMergedReport')
+    executionData.from(subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
+    sourceDirectories.from(subprojects.collect { it.sourceSets.main.allSource.srcDirs })
+    classDirectories.from(subprojects.collect { it.sourceSets.main.output })
+    violationRules {
+        rule {
+            limit { counter = 'LINE'; value = 'COVEREDRATIO'; minimum = 0.90 }
+            limit { counter = 'BRANCH'; value = 'COVEREDRATIO'; minimum = 0.90 }
+        }
+    }
+}
+
+sonar {
+    properties {
+        property 'sonar.projectKey', "ticketing-${rootProject.name}"
+        property 'sonar.coverage.jacoco.xmlReportPaths', "${rootProject.layout.buildDirectory.get().asFile}/reports/jacoco/merged/jacoco.xml"
+        property 'sonar.qualitygate.wait', 'true'
+        property 'sonar.qualitygate.timeout', '600'
+    }
+}
