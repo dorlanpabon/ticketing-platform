@@ -1,0 +1,65 @@
+logging:
+  structured:
+    format:
+      console: ecs
+server:
+  port: ${SERVER_PORT:8080}
+spring:
+  application:
+    name: "inventory"
+  devtools:
+    add-properties: false
+  profiles:
+    include: null
+management:
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      role: ${APP_ROLE:api}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    export:
+      enabled: ${TRACING_ENABLED:false}
+    sampling:
+      probability: ${TRACING_SAMPLE_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://otel-collector:4318/v1/traces}
+          timeout: 2s
+          connect-timeout: 1s
+  logging:
+    export:
+      otlp:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: "health,prometheus"
+  endpoint:
+    health:
+      probes:
+        enabled: true
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+aws:
+  region: ${AWS_REGION:us-east-1}
+  dynamodb:
+    endpoint: ${DYNAMODB_ENDPOINT:}
+  sqs:
+    endpoint: ${SQS_ENDPOINT:}
+inventory:
+  table: ${DYNAMODB_TABLE_NAME:ticketing-inventory}
+  commands-queue: ${INVENTORY_COMMANDS_QUEUE_URL:}
+  expirations-queue: ${INVENTORY_EXPIRATIONS_QUEUE_URL:}
+  order-events-queue: ${ORDER_EVENTS_QUEUE_URL:}
+  catalog-events-queue: ${CATALOG_EVENTS_QUEUE_URL:}
+  workers:
+    enabled: ${WORKERS_ENABLED:false}
+  local-recovery:
+    enabled: ${LOCAL_RECOVERY_ENABLED:false}
+auth:
+  mode: ${AUTH_MODE:trusted-gateway}

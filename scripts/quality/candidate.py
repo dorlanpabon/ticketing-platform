@@ -26,7 +26,7 @@ def acceptance_evidence(path: Path, root: Path, sha: str, tree: str) -> dict:
     if value.get("dirty") is not False:
         raise QualityError("Acceptance evidence requires a clean candidate tree")
     result = {}
-    for name in ("integration", "architecture", "concurrency", "recovery", "containerSmoke"):
+    for name in ("integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry"):
         check = value.get("checks", {}).get(name, {})
         report = (root / check.get("evidence", "")).resolve()
         if check.get("status") != "passed" or not report.is_relative_to(root) or not report.is_file() or not report.stat().st_size:
@@ -136,11 +136,12 @@ def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
                 raise QualityError("Registry did not establish a unique immutable image digest")
             images[service] = matching[0]
             execute([trivy, "image", "--format", "cyclonedx", "--output", str(output / f"{service}-sbom.json"), matching[0]], timeout=900)
-        checks = {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")}
+        checks = {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")}
         manifest = {"schemaVersion": 1, "sourceCommit": sha, "tree": tree, "images": images, "sonar": sonar,
                     "checks": checks, "policyHash": policy_hash, "qualityRunId": run_id,
                     "acceptanceEvidence": proofs, "configurationScope": "Application Dockerfiles and workflows; Terraform is owned by ticketing-infra",
-                    "infraGitSha": infra_sha, "validationEnvironment": "local containers; not an AWS deployment"}
+                    "infraGitSha": infra_sha, "infrastructureValidation": "Owned by the independent infrastructure repository; not asserted by this application manifest",
+                    "validationEnvironment": "local containers; not an AWS deployment"}
         verify_manifest(manifest, tree, sha)
         write_json(output / "manifest.json", manifest)
         print(json.dumps({"candidate": sha, "images": images, "awsDeployed": False}))

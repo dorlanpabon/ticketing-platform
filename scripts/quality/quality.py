@@ -479,7 +479,7 @@ def verify_manifest(manifest: dict, tree: str, expected_sha: str | None = None, 
         if evidence.get("qualityGate") != "OK" or not evidence.get("analysisId") or not evidence.get("ceTaskId"):
             raise QualityError("Incomplete or failed Sonar evidence")
         validate_sonar_metrics(evidence.get("metrics", {}))
-    required = ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")
+    required = ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")
     if any(manifest.get("checks", {}).get(name) != "passed" for name in required):
         raise QualityError("Candidate evidence is incomplete")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("policyHash", "")):

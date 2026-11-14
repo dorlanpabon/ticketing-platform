@@ -16,7 +16,7 @@ class AcceptanceEvidenceTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.report = self.root / 'acceptance.json'
         self.value = {'commit': 'a' * 40, 'tree': 'b' * 40, 'dirty': False, 'checks': {}}
-        for check in ('integration', 'architecture', 'concurrency', 'recovery', 'containerSmoke'):
+        for check in ('integration', 'architecture', 'concurrency', 'recovery', 'containerSmoke', 'expiry'):
             (self.root / (check + '.json')).write_text('{"status":"passed"}', encoding='utf-8')
             self.value['checks'][check] = {'status': 'passed', 'evidence': check + '.json'}
 
@@ -26,7 +26,7 @@ class AcceptanceEvidenceTest(unittest.TestCase):
 
     def test_clean_exact_candidate_hashes_actual_reports(self):
         proofs = self.verify()
-        self.assertEqual(5, len(proofs))
+        self.assertEqual(6, len(proofs))
         self.assertEqual(64, len(proofs['recovery']['sha256']))
 
     def test_dirty_or_missing_clean_identity_is_rejected(self):

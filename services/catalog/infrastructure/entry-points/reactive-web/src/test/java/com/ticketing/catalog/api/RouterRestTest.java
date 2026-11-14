@@ -81,4 +81,12 @@ class RouterRestTest {
                 .contentType(MediaType.APPLICATION_JSON).bodyValue("{")
                 .exchange().expectStatus().isBadRequest();
     }
+
+    @Test void rejectsMissingCreationBodyBeforeCallingTheUseCase() {
+        webTestClient.post().uri("/api/v1/events").header("Authorization", "Bearer local-admin")
+                .header("Idempotency-Key", "create-empty").contentType(MediaType.APPLICATION_JSON)
+                .exchange().expectStatus().isBadRequest().expectHeader().contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .expectBody().jsonPath("$.code").isEqualTo("INVALID_BODY");
+        org.mockito.Mockito.verifyNoInteractions(useCase);
+    }
 }

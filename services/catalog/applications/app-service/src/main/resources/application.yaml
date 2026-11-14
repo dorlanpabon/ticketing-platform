@@ -13,6 +13,29 @@ spring:
   codec:
     max-in-memory-size: 16KB
 management:
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      role: ${APP_ROLE:api}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    export:
+      enabled: ${TRACING_ENABLED:false}
+    sampling:
+      probability: ${TRACING_SAMPLE_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://otel-collector:4318/v1/traces}
+          timeout: 2s
+          connect-timeout: 1s
+  logging:
+    export:
+      otlp:
+        enabled: false
   endpoints:
     web:
       exposure:

@@ -161,7 +161,7 @@ class ValidationTest(unittest.TestCase):
                 "images": {s: f"registry.invalid/{s}@sha256:" + "d" * 64 for s in quality.SERVICES},
                 "sonar": {s: {"project": "ticketing-" + s, "commit": sha, "qualityGate": "OK",
                                "analysisId": s, "ceTaskId": s, "metrics": cls.metrics()} for s in quality.SERVICES},
-                "checks": {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")}}
+                "checks": {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")}}
 
     def test_manifest_accepts_same_tree_different_merge_sha(self):
         quality.verify_manifest(self.manifest(), "b" * 40)

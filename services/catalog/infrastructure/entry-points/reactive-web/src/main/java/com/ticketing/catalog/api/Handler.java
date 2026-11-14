@@ -1,6 +1,7 @@
 package com.ticketing.catalog.api;
 
 import com.ticketing.catalog.usecase.CatalogUseCase;
+import com.ticketing.catalog.model.DomainFailure;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
@@ -13,7 +14,8 @@ public final class Handler {
     public record CreateEvent(String name,String venue,Instant startsAt,int capacity) { }
     public Mono<ServerResponse> create(ServerRequest request) {
         Identity identity=Identity.from(request); identity.requireAdmin();
-        return request.bodyToMono(CreateEvent.class).flatMap(body -> useCase.create(identity.subject(),request.headers().firstHeader("Idempotency-Key"),body.name(),body.venue(),body.startsAt(),body.capacity()))
+        return request.bodyToMono(CreateEvent.class).switchIfEmpty(Mono.error(new DomainFailure(400,"INVALID_BODY")))
+                .flatMap(body -> useCase.create(identity.subject(),request.headers().firstHeader("Idempotency-Key"),body.name(),body.venue(),body.startsAt(),body.capacity()))
                 .flatMap(event -> ServerResponse.accepted().location(URI.create("/api/v1/events/"+event.eventId())).bodyValue(event));
     }
     public Mono<ServerResponse> find(ServerRequest request) { return useCase.find(request.pathVariable("id")).flatMap(event -> ServerResponse.ok().bodyValue(event)); }
