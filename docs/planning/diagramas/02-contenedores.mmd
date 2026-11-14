@@ -1,0 +1,52 @@
+flowchart TB
+    Client["Cliente o colección de pruebas"]
+    Entry["Entrada autenticada<br/>Rutas públicas autorizadas"]
+
+    subgraph CatalogBoundary["Microservicio Catálogo"]
+        Catalog["API WebFlux y consumidor<br/>Publicación de eventos"]
+        CatalogData[("Datos de Catálogo<br/>Eventos, inbox y outbox")]
+        CatalogRelay["Relay de outbox"]
+        Catalog -->|"Transacción local"| CatalogData
+        CatalogData --> CatalogRelay
+    end
+
+    subgraph OrderBoundary["Microservicio Órdenes"]
+        Orders["API WebFlux y coordinador<br/>Intenciones y seguimiento de saga"]
+        OrderData[("Datos de Órdenes<br/>Órdenes, idempotencia, inbox y outbox")]
+        OrderRelay["Relay de outbox"]
+        Orders -->|"Transacción local"| OrderData
+        OrderData --> OrderRelay
+    end
+
+    subgraph InventoryBoundary["Microservicio Inventario"]
+        Inventory["API WebFlux y consumidor<br/>Autoridad sobre entradas y reservas"]
+        InventoryData[("Datos de Inventario<br/>Entradas, reservas, 16 contadores por evento<br/>Auditoría, inbox y outbox")]
+        InventoryRelay["Relay de outbox"]
+        Expirer["Worker de expiración<br/>Consulta por vencimiento; sin Scan"]
+        Inventory -->|"Transacciones condicionales"| InventoryData
+        Expirer -->|"Liberación de reserva completa"| InventoryData
+        InventoryData --> InventoryRelay
+    end
+
+    Commands["SQS Standard<br/>inventory-commands"]
+    OrderEvents["SQS Standard<br/>order-events"]
+    CatalogEvents["SQS Standard<br/>catalog-events"]
+    CommandsDLQ["DLQ de comandos"]
+    OrdersDLQ["DLQ de eventos de Órdenes"]
+    CatalogDLQ["DLQ de eventos de Catálogo"]
+
+    Client --> Entry
+    Entry --> Catalog
+    Entry --> Orders
+    Entry -->|"Solo consultas públicas"| Inventory
+    Orders -->|"Reserva idempotente y consulta internas"| Inventory
+    CatalogRelay -->|"Preparar inventario"| Commands
+    OrderRelay -->|"Comprar, confirmar o asignar cortesía"| Commands
+    Commands --> Inventory
+    InventoryRelay -->|"Snapshot versionado de reserva"| OrderEvents
+    OrderEvents --> Orders
+    InventoryRelay -->|"Inventario preparado"| CatalogEvents
+    CatalogEvents --> Catalog
+    Commands -.->|"Tras reintentos agotados"| CommandsDLQ
+    OrderEvents -.->|"Tras reintentos agotados"| OrdersDLQ
+    CatalogEvents -.->|"Tras reintentos agotados"| CatalogDLQ

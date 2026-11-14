@@ -1,0 +1,25 @@
+flowchart LR
+    MainBase["main<br/>Base inicial estable"]
+    Develop["develop<br/>Integración de trabajo"]
+    Work["feature/*, fix/*, chore/*<br/>Siempre creadas desde develop"]
+    PR["PR de trabajo<br/>Checks por commit e integración"]
+    DevGate{"Candidato DEV aprobado<br/>Tests, cobertura, seguridad<br/>y 3 Quality Gates Sonar"}
+    Freeze["Congelar nuevos merges funcionales<br/>Fijar SHA y manifiesto"]
+    Release["release / QA<br/>Mismos digests y aceptación"]
+    QAGate{"Aceptación QA aprobada"}
+    Main["main / PROD<br/>Versión estable y tag inmutable"]
+    Fix["Corrección desde develop<br/>fix/*"]
+
+    MainBase -->|"Crear rama inicialmente"| Develop
+    MainBase -.->|"Crear rama release desde la misma base"| Release
+    Develop -->|"Crear rama de trabajo"| Work
+    Work --> PR
+    PR -->|"Merge commit"| Develop
+    Develop --> DevGate
+    DevGate -->|"Sí"| Freeze
+    Freeze -->|"PR develop a release"| Release
+    Release --> QAGate
+    QAGate -->|"Sí: PR release a main"| Main
+    QAGate -->|"Defecto"| Fix
+    DevGate -->|"No: corregir, sin promoción"| Fix
+    Fix --> PR

@@ -1,0 +1,27 @@
+flowchart TB
+    Stage["Cambios preparados en el índice Git"]
+    Snapshot["Hook pre-commit<br/>Snapshot exacto de staged"]
+    LocalStatic["PMD Java 25 + Gitleaks<br/>Checkov y validación IaC cuando apliquen"]
+    LocalGate{"Checks locales aprobados"}
+    Commit["Crear commit"]
+    Push["Push o PR"]
+    Enumerate["Enumerar todos los SHA nuevos<br/>Incluye intermedios y merge commits"]
+    CIStatic["Analizar cada snapshot completo<br/>Política controlada y herramientas fijadas"]
+    Evidence["Evidencia por SHA<br/>Versión de herramientas + hash de políticas"]
+    Integration["Build y resultado de integración<br/>Tests, JaCoCo, arquitectura y seguridad"]
+    Merge["Integrar en develop"]
+    Exact["Checkout del SHA exacto de develop<br/>Runner local dedicado y confiable"]
+    Sonar["SonarQube Community local<br/>Tres proyectos independientes<br/>Solo snapshots de develop"]
+    SonarGate{"Tres Quality Gates verdes<br/>Mismo candidato y analysisId verificados"}
+    Manifest["Manifiesto DEV aprobado<br/>Digests, SHA, reportes y políticas"]
+    Promotion["Habilitar PR develop a release"]
+    Block["Bloquear creación local,<br/>integración o promoción correspondiente"]
+
+    Stage --> Snapshot --> LocalStatic --> LocalGate
+    LocalGate -->|"Sí"| Commit --> Push --> Enumerate --> CIStatic --> Evidence --> Integration
+    LocalGate -->|"No"| Block
+    CIStatic -->|"Fallo o SHA sin evidencia"| Block
+    Integration -->|"Checks aprobados"| Merge --> Exact --> Sonar --> SonarGate
+    Integration -->|"Fallo"| Block
+    SonarGate -->|"Sí"| Manifest --> Promotion
+    SonarGate -->|"Fallo, timeout o evidencia ausente"| Block

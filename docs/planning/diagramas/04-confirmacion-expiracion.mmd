@@ -1,0 +1,41 @@
+sequenceDiagram
+    autonumber
+    actor Customer as Comprador
+    participant Orders as Órdenes
+    participant ODB as Datos de Órdenes
+    participant Queue as SQS de comandos
+    participant Inventory as Inventario
+    participant IDB as Datos de Inventario
+    participant Expirer as Worker de expiración
+
+    Customer->>Orders: POST /orders/{id}/confirm
+    Orders->>Inventory: Consultar reserva autoritativa y comprobar propietario
+    Inventory-->>Orders: Reserva vigente y estado actual
+    Orders->>ODB: Transacción: intención de confirmación + outbox
+    Orders-->>Customer: 202, confirmación aceptada para procesamiento
+    Note over ODB,Queue: El relay publica ConfirmPurchase con commandId estable por orden
+    Queue->>Inventory: Entrega de ConfirmPurchase
+    Inventory->>IDB: Transacción condicional RESERVED a PENDING_CONFIRMATION
+    IDB-->>Inventory: Transición, auditoría y outbox durables
+
+    par Intento de completar la venta
+        Inventory->>IDB: Intentar SOLD si reserva, versión y deadline siguen vigentes
+    and Intento de liberar cuando vence
+        Expirer->>IDB: Intentar AVAILABLE si deadline alcanzado y estado no final
+    end
+
+    alt Gana la venta válida
+        IDB-->>Inventory: SOLD, entradas y contadores actualizados atómicamente
+        IDB-->>Expirer: Condición no satisfecha, releer estado final y no liberar
+    else Gana la expiración
+        IDB-->>Expirer: Reserva completa liberada + auditoría + outbox
+        IDB-->>Inventory: Condición no satisfecha, resultado EXPIRED, sin venta
+    end
+
+    Inventory->>Queue: ACK únicamente después del resultado terminal durable
+    opt Caída posterior al commit y anterior al ACK
+        Queue->>Inventory: Redelivery del mismo comando
+        Inventory->>IDB: Consultar inbox y resultado terminal
+        IDB-->>Inventory: Resultado existente, no repetir efectos
+        Inventory->>Queue: ACK
+    end

@@ -1,0 +1,54 @@
+flowchart TB
+    User["Cliente autenticado"]
+    GitHub["GitHub Actions<br/>Plan y despliegue explícitos<br/>OIDC limitado al ambiente"]
+
+    subgraph Account["Cuenta AWS del ambiente: DEV, QA o PROD"]
+        Cognito["Cognito<br/>Identidad del ambiente"]
+        APIGW["API Gateway HTTP API<br/>JWT, scopes y rutas públicas"]
+        Role["Roles de plan y despliegue<br/>Cuenta y ambiente esperados"]
+        SQS["SQS Standard y DLQ<br/>Colas propias del ambiente"]
+        Dynamo[("DynamoDB<br/>Datos separados por servicio")]
+        ECR["ECR<br/>Imágenes fijadas por digest"]
+        Logs["CloudWatch<br/>Logs, métricas y alarmas"]
+        S3Layers["S3<br/>Capas de imágenes ECR"]
+        S3State[("Bucket S3 de estado Terraform<br/>Solo roles CI y bootstrap")]
+
+        subgraph VPC["VPC privada del ambiente: dos zonas"]
+            VpcLink["VPC Link<br/>Security group de ingreso"]
+            ALB["ALB interno<br/>Sin rutas públicas internal"]
+            InterfaceEP["Interface endpoints<br/>SQS, ECR API, ECR DKR y Logs"]
+            GatewayEP["Gateway endpoints<br/>DynamoDB y S3"]
+
+            subgraph AZA["Zona A: subred privada"]
+                ECS_A["Tareas ECS Fargate<br/>Catálogo, Órdenes e Inventario<br/>Task role propio por servicio"]
+            end
+
+            subgraph AZB["Zona B: subred privada"]
+                ECS_B["Tareas ECS Fargate<br/>Réplicas según configuración IaC"]
+            end
+
+            VpcLink --> ALB
+            ALB --> ECS_A
+            ALB --> ECS_B
+            ECS_A --> InterfaceEP
+            ECS_B --> InterfaceEP
+            ECS_A --> GatewayEP
+            ECS_B --> GatewayEP
+        end
+
+        APIGW -->|"Integración privada"| VpcLink
+        InterfaceEP --> SQS
+        InterfaceEP --> ECR
+        InterfaceEP --> Logs
+        GatewayEP --> Dynamo
+        GatewayEP --> S3Layers
+    end
+
+    User -->|"Autenticarse"| Cognito
+    User -->|"HTTPS y JWT"| APIGW
+    Cognito -.->|"Emisor y claves para validar JWT"| APIGW
+    GitHub -->|"Credenciales temporales OIDC"| Role
+    Role -->|"Acceso al estado y lock autorizados"| S3State
+    Role -.->|"Aplicar IaC autorizada"| VPC
+    Role -.->|"Configurar recursos del ambiente"| Dynamo
+    Role -.->|"Configurar recursos del ambiente"| SQS

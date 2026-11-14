@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> AVAILABLE
+    AVAILABLE --> RESERVED: Reserva condicional de todas las entradas
+    RESERVED --> PENDING_CONFIRMATION: Confirmación explícita y vigente
+    PENDING_CONFIRMATION --> SOLD: Consumidor confirma dentro del plazo
+    RESERVED --> AVAILABLE: Reserva vencida; liberación completa
+    PENDING_CONFIRMATION --> AVAILABLE: Plazo vencido antes de vender
+    AVAILABLE --> COMPLIMENTARY: Cortesía administrativa autorizada
+    SOLD --> [*]
+    COMPLIMENTARY --> [*]

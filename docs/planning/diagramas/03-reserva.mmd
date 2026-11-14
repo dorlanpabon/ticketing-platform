@@ -1,0 +1,38 @@
+sequenceDiagram
+    autonumber
+    actor Customer as Comprador
+    participant Orders as Órdenes
+    participant ODB as Datos de Órdenes
+    participant Inventory as Inventario
+    participant IDB as Datos de Inventario
+    participant Relay as Relay de Órdenes
+    participant Queue as SQS de comandos
+
+    Customer->>Orders: POST /orders + Idempotency-Key
+    Orders->>Orders: Validar identidad y 1..10 entradas distintas
+    Orders->>ODB: Transacción: orden RESERVING + deadline + idempotencia + outbox
+    ODB-->>Orders: Intención durable, reservationId = orderId
+
+    Orders->>Inventory: PUT reserva idempotente, presupuesto HTTP de 500 ms
+    alt Resultado conocido dentro del presupuesto
+        Inventory->>IDB: Reserva condicional todo o nada + contadores + auditoría + outbox
+        IDB-->>Inventory: Resultado durable de éxito o rechazo
+        Inventory-->>Orders: Snapshot y versión autoritativos
+        Orders->>ODB: Aplicar snapshot si su versión es posterior
+    else Timeout o dependencia inaccesible
+        Note over Orders,Inventory: El resultado es desconocido, no cancelar por suposición
+    end
+
+    Orders-->>Customer: 202 + orderId + estado observado + URL de consulta
+    Note over Customer,Orders: 202 garantiza trabajo persistido, puede continuar RESERVING
+    Note over Relay,Queue: La publicación puede ocurrir antes o después de la respuesta, no se espera para aceptar
+
+    Relay->>ODB: Reclamar outbox pendiente con lease
+    Relay->>Queue: Publicar PurchaseRequested con identidad estable
+    Queue-->>Relay: Publicación confirmada
+    Relay->>ODB: Registrar entrega del outbox
+    Queue->>Inventory: Entregar comando, puede estar duplicado
+    Inventory->>IDB: Ejecutar la misma operación idempotente y verificar deadline
+    IDB-->>Inventory: Misma reserva o resultado terminal, sin doble descuento
+    Inventory->>Queue: ACK después de persistir el resultado
+    Note over Inventory,IDB: Su outbox publica el snapshot hacia Órdenes
