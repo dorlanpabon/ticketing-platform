@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-if command -v python3 >/dev/null 2>&1; then
+if python3 --version >/dev/null 2>&1; then
   python3 scripts/quality/quality.py staged
 else
   python scripts/quality/quality.py staged
