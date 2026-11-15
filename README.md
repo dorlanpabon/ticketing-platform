@@ -4,7 +4,7 @@ Three reactive services generated with Bancolombia Scaffold Clean Architecture 5
 
 ## Status
 
-Implementation in progress. Verification results are recorded under `docs/evidence`; architecture targets are not test results. No AWS resources are deployed automatically. Terraform is maintained in the independent `ticketing-infra` repository.
+The local runtime, contracts and quality tooling are implemented. `docs/evidence` maps requirements to code and records development observations. Generated verification reports under `build/quality` identify the tested SHA, dirty state, runtime and limits; architecture targets are not test results. No AWS resources are deployed automatically. Terraform is maintained in the independent `ticketing-infra` repository.
 
 ## Business contract
 

@@ -35,6 +35,57 @@ def acceptance_evidence(path: Path, root: Path, sha: str, tree: str) -> dict:
     return result
 
 
+def scan_image_evidence(trivy: str, image: str, report: Path, sbom: Path) -> None:
+    # A successful exit must not reuse stale evidence or hide missing Java analysis.
+    report.unlink(missing_ok=True)
+    sbom.unlink(missing_ok=True)
+    execute([trivy, "image", "--cache-backend", "memory", "--list-all-pkgs", "--config", "", "--ignorefile", "",
+             "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--scanners", "vuln",
+             "--format", "json", "--output", str(report), image], timeout=900)
+    try:
+        value = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Image scan did not produce a readable JSON report") from error
+    results = value.get("Results") if isinstance(value, dict) else None
+    if not isinstance(results, list) or not results or any(not isinstance(item, dict) for item in results):
+        raise QualityError("Image scan has no complete results")
+    inventories = set()
+    for item in results:
+        kind = None
+        if item.get("Class") == "os-pkgs":
+            kind = "os"
+        elif item.get("Class") == "lang-pkgs" and item.get("Type") == "jar":
+            kind = "java"
+        if kind:
+            packages = item.get("Packages")
+            if not isinstance(packages, list) or not packages or any(
+                    not isinstance(package, dict) or any(not isinstance(package.get(key), str) or not package[key] for key in ("Name", "Version"))
+                    for package in packages):
+                raise QualityError(f"Image scan has an incomplete {kind} package inventory")
+            inventories.add(kind)
+        vulnerabilities = item.get("Vulnerabilities", [])
+        if vulnerabilities is None:
+            vulnerabilities = []
+        if not isinstance(vulnerabilities, list) or any(not isinstance(finding, dict) or finding.get("Severity") not in
+                ("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL") for finding in vulnerabilities):
+            raise QualityError("Image scan has malformed vulnerability results")
+        if any(finding["Severity"] in ("HIGH", "CRITICAL") for finding in vulnerabilities):
+            raise QualityError("Image scan contains HIGH/CRITICAL vulnerabilities")
+    if inventories != {"os", "java"}:
+        raise QualityError("Image scan requires both OS and Java package inventories")
+    execute([trivy, "convert", "--config", "", "--ignorefile", "", "--format", "cyclonedx",
+             "--output", str(sbom), str(report)], timeout=900)
+    try:
+        value = json.loads(sbom.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Image scan did not produce a readable CycloneDX SBOM") from error
+    components = value.get("components") if isinstance(value, dict) else None
+    if not isinstance(value, dict) or value.get("bomFormat") != "CycloneDX" or not isinstance(components, list) or not components or any(
+            not isinstance(component, dict) or any(not isinstance(component.get(key), str) or not component[key] for key in ("name", "type"))
+            for component in components):
+        raise QualityError("CycloneDX SBOM has no valid component inventory")
+
+
 def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
     if os.environ.get("GITHUB_REF") != "refs/heads/develop" or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
         raise QualityError("Candidate publication requires an explicit develop dispatch")
@@ -127,15 +178,13 @@ def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
                 execute(["docker", "build", "--label", "org.opencontainers.image.revision=" + sha,
                          "--label", "org.opencontainers.image.source=https://github.com/" + repo,
                          "--tag", tag, str(context_path)], timeout=900)
-            execute([trivy, "image", "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--scanners", "vuln",
-                     "--format", "json", "--output", str(output / f"{service}-image-security.json"), tag], timeout=900)
+            scan_image_evidence(trivy, tag, output / f"{service}-image-security.json", output / f"{service}-sbom.json")
             execute(["docker", "push", tag], timeout=900)
             digests = json.loads(execute(["docker", "image", "inspect", tag, "--format", "{{json .RepoDigests}}"] ).stdout)
             matching = [item for item in digests if item.startswith(tag.rsplit(":", 1)[0] + "@sha256:")]
             if len(matching) != 1:
                 raise QualityError("Registry did not establish a unique immutable image digest")
             images[service] = matching[0]
-            execute([trivy, "image", "--format", "cyclonedx", "--output", str(output / f"{service}-sbom.json"), matching[0]], timeout=900)
         checks = {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")}
         manifest = {"schemaVersion": 1, "sourceCommit": sha, "tree": tree, "images": images, "sonar": sonar,
                     "checks": checks, "policyHash": policy_hash, "qualityRunId": run_id,
