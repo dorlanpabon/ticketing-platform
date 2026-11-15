@@ -13,6 +13,10 @@ spring:
   codec:
     max-in-memory-size: 16KB
 management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
   metrics:
     tags:
       application: ${spring.application.name}

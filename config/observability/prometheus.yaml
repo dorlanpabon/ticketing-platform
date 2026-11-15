@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: ticketing-apis
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [catalog:8080, orders:8080, inventory:8080]
+  - job_name: ticketing-workers
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [catalog-worker, orders-worker, inventory-worker]
+        type: A
+        port: 8080
+        refresh_interval: 30s
+

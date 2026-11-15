@@ -1,0 +1,9 @@
+.git
+**/.gradle
+**/build
+**/build-cache
+.env*
+evidence
+quality-reports
+docs
+__pycache__

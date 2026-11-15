@@ -54,9 +54,11 @@ public class SQSListener implements AutoCloseable {
                         .name("async_operation")
                         .tag("operation", operation)
                         .metrics()
-                        .then(confirm(message)),
-                        properties.maxNumberOfMessages())
-                .onErrorContinue((e, o) -> log.error("Error listening sqs message", e));
+                        .then(Mono.defer(() -> confirm(message)))
+                        .onErrorResume(error -> {
+                            log.warn("Message retained for retry id={} cause={}", message.messageId(), error.getClass().getSimpleName());
+                            return Mono.empty();
+                        }), properties.maxNumberOfMessages());
     }
 
     private Mono<Void> confirm(Message message) {

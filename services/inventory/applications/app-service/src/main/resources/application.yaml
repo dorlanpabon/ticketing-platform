@@ -12,6 +12,10 @@ spring:
   profiles:
     include: null
 management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
   metrics:
     tags:
       application: ${spring.application.name}
