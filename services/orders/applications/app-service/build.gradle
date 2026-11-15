@@ -1,0 +1,6 @@
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-opentelemetry'
+	implementation 'org.reactivecommons.utils:object-mapper:0.1.0'
+	implementation 'software.amazon.awssdk:sts'
+}

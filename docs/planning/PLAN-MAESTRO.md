@@ -4,6 +4,8 @@
 
 > Estado: diseño y plan de ejecución. Este documento no acredita código implementado, pruebas ejecutadas ni infraestructura desplegada. Las versiones de herramientas indicadas fueron contrastadas con documentación pública durante la planificación; su combinación debe superar el bootstrap de compatibilidad.
 
+Actualización de decisiones al 16 de noviembre de 2026: este plan incorpora la arquitectura implementada de tres imágenes/seis roles, timer SQS por reserva y recuperación periódica cada minuto. Los resultados se registran aparte en `ticketing-platform/docs/evidence`; el diseño y el checklist de este paquete no sustituyen esa evidencia ni acreditan AWS desplegado.
+
 ## Lectura del paquete
 
 | Documento | Para qué sirve |
@@ -66,7 +68,7 @@ Quedan fuera frontend, cobros, reembolsos, cambios de capacidad de eventos activ
 
 No habrá lectura o escritura directa de tablas ajenas ni transacciones entre propietarios. Órdenes coordina una saga con transacciones locales y comandos durables. El costo de separar estos servicios debe explicarse: hay recuperación, consistencia eventual de proyecciones y más contratos que en un único propietario transaccional.
 
-En la primera entrega, cada servicio puede alojar API, relay, consumidores y tareas periódicas. Separar API y worker en procesos distintos será posible mediante configuración sin crear un nuevo contexto de negocio.
+Cada contexto genera una imagen y ejecuta dos procesos independientes: API y worker. Son tres imágenes y seis despliegues; ambos roles comparten exclusivamente la tabla de su contexto. `API_ENABLED` y `WORKERS_ENABLED` activan el rol correspondiente. Los workers alojan relay/consumidores y no exponen negocio HTTP; API y worker escalan por separado sin crear otro contexto de negocio.
 
 ### 2.1. Scaffold y versiones iniciales
 
@@ -205,10 +207,13 @@ La proyección solo aplica versiones crecientes. Un reconciliador busca órdenes
 - `now >= expiresAt` implica vencimiento; revisar el reloj en cada intento y retry.
 - PENDING_CONFIRMATION conserva el mismo plazo.
 - Reloj UTC inyectable; sincronización de reloj documentada para operación distribuida.
-- Worker cada segundo con concurrencia limitada y reclamación condicional de trabajo.
+- La transacción de reserva añade `ExpireReservation` al outbox durable. Se publica en `inventory-expirations` con `DelaySeconds=ceil(max(0, expiresAt-now))`, tope 600; cada reintento conserva el deadline original.
+- Un temporizador temprano se difiere mediante visibilidad sin ACK. Duplicados, deadlines antiguos y reservas finales no liberan otra asignación.
+- EventBridge Scheduler publica `SweepExpiredReservations` cada minuto en la misma cola. Un lease durable global se adquiere antes de consultar los 16 shards; cooldown de 60 s, lease de 55 s y trabajo acotado a 45 s con paginación/lotes de 100. No hay barrido cada segundo por réplica.
+- En local, un único contenedor `expiry-recovery` publica el mismo comando cada minuto; `LOCAL_RECOVERY_ENABLED=false` evita otro barrido directo por worker.
 - Liberar todas las entradas de una reserva en una transacción.
 - Antes de reasignar entradas vencidas, liberar la reserva anterior completa; nunca parcialmente.
-- Objetivo de materialización de liberación: hasta cinco segundos en condiciones normales.
+- La liberación física depende de entrega/ejecución y se mide; no se promete puntualidad exacta de SQS o Scheduler. El umbral de frescura de disponibilidad es cinco segundos.
 - La disponibilidad puede ser conservadora durante ese retraso. Si excede el límite, indicar indisponibilidad temporal en lugar de presentar cifras como actualizadas.
 - El vencimiento lógico no depende de que el worker esté vivo; ninguna confirmación tardía es válida.
 
@@ -252,7 +257,7 @@ Los dieciséis contadores se leen mediante un snapshot transaccional; dieciséis
 
 ## 6. SQS, outbox e idempotencia
 
-Tres colas Standard: `inventory-commands`, `order-events` y `catalog-events`; cada una con DLQ.
+Cuatro colas Standard: `inventory-commands`, `inventory-expirations`, `order-events` y `catalog-events`; cada una con DLQ de consumo. AWS añade una quinta DLQ para fallos de entrega de EventBridge Scheduler; local conserva cuatro DLQ y un emisor periódico único. La recuperación periódica y los timers van a `inventory-expirations`, separada de compras.
 
 | Parámetro inicial | Valor |
 |---|---|
@@ -262,13 +267,13 @@ Tres colas Standard: `inventory-commands`, `order-events` y `catalog-events`; ca
 | maxReceiveCount | 5. |
 | Retención principal | 4 días. |
 | Retención DLQ | 14 días. |
-| Concurrencia inicial por consumidor | 16. |
+| Concurrencia inicial por loop consumidor | 10; Inventory mantiene loops independientes para commands y expirations. |
 
 Mensajes con `messageId`, tipo, versión de esquema, agregado y versión, correlationId, causationId, fecha y payload. No incluir tokens de autenticación. Los eventos de estado son snapshots completos, no deltas ciegos.
 
 ### 6.1. Outbox
 
-Todo productor guarda cambio de negocio e intención de publicación en la misma transacción. Relay con lease recuperable, envío rápido tras commit y barrido de recuperación. Objetivo normal de publicación p95 <=1 segundo. El hecho de guardar outbox no prueba que SQS haya recibido el mensaje.
+Todo productor guarda cambio de negocio e intención de publicación en la misma transacción. Antes de consultar pendientes, el relay obtiene un coordinador durable con lease de 30 s/renovación; cada mensaje conserva además su lease y ACK condicionado al propietario. El reposo aumenta el intervalo desde 500 ms hasta 10 s con jitter acotado; actividad lo reinicia y los followers esperan según el vencimiento observado. No se garantiza publicación p95 de un segundo después de inactividad: medirla por escenario. Guardar outbox no prueba recepción física de SQS.
 
 Publicación repetida es válida. Borrar/reconocer mensaje consumido solo después del resultado durable. Mantener marcador inbox y efecto de negocio atómicos cuando corresponda. Para confirmaciones de dos pasos, el marcador terminal no debe impedir reanudar PENDING_CONFIRMATION.
 
@@ -419,8 +424,8 @@ Mismos módulos en todos los ambientes, raíces pequeñas y valores tipados. Cue
 | Parámetro inicial | DEV | QA | PROD |
 |---|---:|---:|---:|
 | Rama | develop | release | main |
-| Tareas mínimas por servicio | 1 | 1 | 2 |
-| Tareas máximas por servicio | 2 | 3 | 6 |
+| Tareas mínimas por despliegue API/worker | 1 | 1 | 2 |
+| Tareas máximas por despliegue API/worker | 2 | 3 | 6 |
 | CPU por tarea | 0,5 vCPU | 0,5 vCPU | 0,5 vCPU |
 | Memoria por tarea | 1 GiB | 1 GiB | 1 GiB |
 | Logs | 7 días | 14 días | 30 días |
@@ -439,7 +444,7 @@ Backend S3 cifrado, versionado, sin acceso público y con use_lockfile. Estados 
 
 ### 10.3. AWS
 
-Región inicial us-east-1. VPC de dos zonas, Fargate privado sin IP pública, API Gateway HTTP API con JWT/Cognito, VPC Link y ALB interno. DynamoDB, SQS, ECR y CloudWatch. Sin NAT Gateway.
+Región inicial us-east-1. VPC de dos zonas, Fargate privado sin IP pública, API Gateway HTTP API con JWT/Cognito, VPC Link y ALB interno. Seis ECS services/task roles para API y worker de tres contextos, reutilizando tres imágenes. Solo APIs se registran en ALB/Cloud Map; workers sin ingreso de negocio. DynamoDB, cuatro colas SQS, cuatro DLQ de consumo, Scheduler con quinta DLQ de entrega, ECR y CloudWatch. Sin NAT Gateway. La infraestructura pertenece al repositorio independiente `ticketing-infra`.
 
 Endpoints gateway DynamoDB/S3; endpoints interface SQS, ECR API, ECR DKR y Logs. Crear otros únicamente si una dependencia realmente los usa. Construir imágenes antes del despliegue; ninguna descarga de paquetes al arrancar.
 
@@ -457,11 +462,11 @@ Rollback a digest anterior aprobado y configuración compatible, registrando evi
 
 ## 11. Docker, seguridad y observabilidad
 
-Compose incluye tres servicios, DynamoDB Local persistente, ElasticMQ persistente con colas/DLQ, bootstrap idempotente, identidades locales de prueba y healthchecks. Arranque: `docker compose up --build --wait`. Fixtures mediante comando explícito; reiniciar no altera inventario.
+Compose incluye tres imágenes con seis procesos de negocio (API/worker por contexto), DynamoDB Local persistente, ElasticMQ persistente con cuatro colas/cuatro DLQ, bootstrap idempotente, un emisor `expiry-recovery`, identidades locales de prueba y healthchecks. Arranque: `docker compose up --build --wait`. Fixtures mediante comando explícito; reiniciar no altera inventario. Los workers no publican puertos al host.
 
 Perfil observability con OpenTelemetry Collector, Prometheus, Grafana y backend local de trazas. Perfil quality independiente para Sonar. ElasticMQ es una alternativa SQS-compatible local; no equivale a validar IAM, límites, latencias y comportamiento de AWS real.
 
-Seguridad: task role por servicio separado de execution role; mínimo acceso a tablas/índices/colas; sin access keys permanentes; cifrado; CORS cerrado; límites de recursos; contenedores no root, capacidades mínimas y filesystem de solo lectura cuando sea compatible; Actuator restringido.
+Seguridad: task role por contexto y rol API/worker, separado de execution role; APIs sin acceso SQS y mínimo acceso a tablas/índices/colas; sin access keys permanentes; cifrado; CORS cerrado; límites de recursos; aplicaciones no root, capacidades mínimas y filesystem de solo lectura; excepciones de emuladores documentadas; Actuator restringido.
 
 Logs JSON con traceId, orderId, reservationId, messageId y operación. Sin tokens, secretos o cuerpos completos. Métricas de latencia, conflictos, duplicados, outbox, cola, DLQ, vencimientos, confirmación y reconciliación.
 

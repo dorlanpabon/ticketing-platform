@@ -1,9 +1,10 @@
 # Diagramas de la plataforma de ticketing
 
-**Estado: DISEÑO PROPUESTO. No representa una implementación ni un despliegue comprobados.**  
+**Estado: diseño sincronizado con la implementación local; AWS definido en IaC, sin despliegue acreditado.**
+
 Fecha: 16 de noviembre de 2026. Todos los diagramas describen las decisiones del plan desde cero.
 
-Los bloques Mermaid son editables. La representación de contexto y contenedores sigue los niveles conceptuales C4, utilizando sintaxis Mermaid estándar. Los ambientes, colas, bases y procesos dibujados son componentes previstos, no recursos existentes.
+Los bloques Mermaid son editables. La representación de contexto y contenedores sigue los niveles conceptuales C4, utilizando sintaxis Mermaid estándar. Los diagramas explican decisiones y componentes; no acreditan por sí solos pruebas aprobadas ni recursos AWS existentes. Los resultados se registran por separado en `ticketing-platform/docs/evidence`.
 
 | N.º | Diagrama | Pregunta que permite responder |
 |---|---|---|
@@ -44,56 +45,62 @@ La plataforma no incluye cobros reales, frontend de venta ni integración con si
 ```mermaid
 flowchart TB
     Client["Cliente o colección de pruebas"]
-    Entry["Entrada autenticada<br/>Rutas públicas autorizadas"]
+    Entry["Entrada autenticada<br/>Nueve rutas públicas autorizadas"]
 
-    subgraph CatalogBoundary["Microservicio Catálogo"]
-        Catalog["API WebFlux y consumidor<br/>Publicación de eventos"]
-        CatalogData[("Datos de Catálogo<br/>Eventos, inbox y outbox")]
-        CatalogRelay["Relay de outbox"]
+    subgraph CatalogBoundary["Catálogo: una imagen, dos roles"]
+        Catalog["API WebFlux<br/>Eventos"]
+        CatalogWorker["Worker<br/>Relay outbox y consumidor"]
+        CatalogData[("Tabla Catálogo<br/>Eventos, inbox y outbox")]
         Catalog -->|"Transacción local"| CatalogData
-        CatalogData --> CatalogRelay
+        CatalogWorker --> CatalogData
     end
 
-    subgraph OrderBoundary["Microservicio Órdenes"]
-        Orders["API WebFlux y coordinador<br/>Intenciones y seguimiento de saga"]
-        OrderData[("Datos de Órdenes<br/>Órdenes, idempotencia, inbox y outbox")]
-        OrderRelay["Relay de outbox"]
+    subgraph OrderBoundary["Órdenes: una imagen, dos roles"]
+        Orders["API WebFlux<br/>Intenciones y consultas"]
+        OrderWorker["Worker<br/>Relay, proyección y reconciliación"]
+        OrderData[("Tabla Órdenes<br/>Idempotencia, inbox y outbox")]
         Orders -->|"Transacción local"| OrderData
-        OrderData --> OrderRelay
+        OrderWorker --> OrderData
     end
 
-    subgraph InventoryBoundary["Microservicio Inventario"]
-        Inventory["API WebFlux y consumidor<br/>Autoridad sobre entradas y reservas"]
-        InventoryData[("Datos de Inventario<br/>Entradas, reservas, 16 contadores por evento<br/>Auditoría, inbox y outbox")]
-        InventoryRelay["Relay de outbox"]
-        Expirer["Worker de expiración<br/>Consulta por vencimiento; sin Scan"]
+    subgraph InventoryBoundary["Inventario: una imagen, dos roles"]
+        Inventory["API WebFlux<br/>Consultas y reserva interna"]
+        InventoryWorker["Worker<br/>Loops commands y expirations<br/>Relay outbox"]
+        InventoryData[("Tabla Inventario<br/>Entradas, reservas, 16 contadores<br/>Auditoría, outbox y leases")]
         Inventory -->|"Transacciones condicionales"| InventoryData
-        Expirer -->|"Liberación de reserva completa"| InventoryData
-        InventoryData --> InventoryRelay
+        InventoryWorker -->|"Misma autoridad e invariantes"| InventoryData
     end
 
-    Commands["SQS Standard<br/>inventory-commands"]
-    OrderEvents["SQS Standard<br/>order-events"]
-    CatalogEvents["SQS Standard<br/>catalog-events"]
-    CommandsDLQ["DLQ de comandos"]
-    OrdersDLQ["DLQ de eventos de Órdenes"]
-    CatalogDLQ["DLQ de eventos de Catálogo"]
+    Commands["SQS inventory-commands"]
+    Expirations["SQS inventory-expirations<br/>ExpireReservation y SweepExpiredReservations"]
+    OrderEvents["SQS order-events"]
+    CatalogEvents["SQS catalog-events"]
+    CommandsDLQ["DLQ commands"]
+    ExpirationsDLQ["DLQ expirations"]
+    OrdersDLQ["DLQ order-events"]
+    CatalogDLQ["DLQ catalog-events"]
+    LocalTick["Emisor local único cada minuto<br/>AWS: Scheduler + DLQ de entrega"]
 
     Client --> Entry
     Entry --> Catalog
     Entry --> Orders
     Entry -->|"Solo consultas públicas"| Inventory
-    Orders -->|"Reserva idempotente y consulta internas"| Inventory
-    CatalogRelay -->|"Preparar inventario"| Commands
-    OrderRelay -->|"Comprar, confirmar o asignar cortesía"| Commands
-    Commands --> Inventory
-    InventoryRelay -->|"Snapshot versionado de reserva"| OrderEvents
-    OrderEvents --> Orders
-    InventoryRelay -->|"Inventario preparado"| CatalogEvents
-    CatalogEvents --> Catalog
-    Commands -.->|"Tras reintentos agotados"| CommandsDLQ
-    OrderEvents -.->|"Tras reintentos agotados"| OrdersDLQ
-    CatalogEvents -.->|"Tras reintentos agotados"| CatalogDLQ
+    Orders -->|"Reserva idempotente y consulta privadas"| Inventory
+    OrderWorker -->|"Reconciliación privada"| Inventory
+    CatalogWorker -->|"ProvisionInventory"| Commands
+    OrderWorker -->|"Compra, confirmación o cortesía"| Commands
+    Commands --> InventoryWorker
+    InventoryWorker -->|"Timer outbox; delay restante 0..600 s"| Expirations
+    LocalTick -->|"Sweep; lease global antes de queries"| Expirations
+    Expirations --> InventoryWorker
+    InventoryWorker -->|"Snapshot versionado"| OrderEvents
+    OrderEvents --> OrderWorker
+    InventoryWorker -->|"InventoryReady"| CatalogEvents
+    CatalogEvents --> CatalogWorker
+    Commands -.->|"Redrive"| CommandsDLQ
+    Expirations -.->|"Redrive"| ExpirationsDLQ
+    OrderEvents -.->|"Redrive"| OrdersDLQ
+    CatalogEvents -.->|"Redrive"| CatalogDLQ
 ```
 
 Cada microservicio posee sus datos y permisos. No hay escrituras ni transacciones entre tablas de propietarios distintos. Los relays y consumidores son roles del servicio correspondiente; el dibujo no exige desplegarlos como microservicios adicionales.
@@ -120,10 +127,10 @@ sequenceDiagram
 
     Orders->>Inventory: PUT reserva idempotente, presupuesto HTTP de 500 ms
     alt Resultado conocido dentro del presupuesto
-        Inventory->>IDB: Reserva condicional todo o nada + contadores + auditoría + outbox
+        Inventory->>IDB: Reserva todo o nada + contadores + auditoría + outbox de estado y timer
         IDB-->>Inventory: Resultado durable de éxito o rechazo
         Inventory-->>Orders: Snapshot y versión autoritativos
-        Orders->>ODB: Aplicar snapshot si su versión es posterior
+        Orders->>Orders: Responder con snapshot, proyección durable se actualiza asíncronamente
     else Timeout o dependencia inaccesible
         Note over Orders,Inventory: El resultado es desconocido, no cancelar por suposición
     end
@@ -140,7 +147,8 @@ sequenceDiagram
     Inventory->>IDB: Ejecutar la misma operación idempotente y verificar deadline
     IDB-->>Inventory: Misma reserva o resultado terminal, sin doble descuento
     Inventory->>Queue: ACK después de persistir el resultado
-    Note over Inventory,IDB: Su outbox publica el snapshot hacia Órdenes
+    Note over Inventory,IDB: Outbox publica snapshot a Órdenes y ExpireReservation a expirations
+    Note over Inventory,IDB: DelaySeconds usa el deadline original, ceil restante entre 0 y 600 s
 ```
 
 La publicación y el intento HTTP pueden competir. Ambos utilizan el mismo identificador y contenido canónico. El plazo se fija al aceptar la solicitud y no se reinicia al consumirla. Un rechazo también se registra para impedir que una redelivery tardía reserve una orden ya rechazada.
@@ -153,49 +161,52 @@ La respuesta `202` no afirma que SQS ya recibió el mensaje si este permanece en
 sequenceDiagram
     autonumber
     actor Customer as Comprador
-    participant Orders as Órdenes
-    participant ODB as Datos de Órdenes
-    participant Queue as SQS de comandos
-    participant Inventory as Inventario
-    participant IDB as Datos de Inventario
-    participant Expirer as Worker de expiración
+    participant Orders as Órdenes API
+    participant ODB as Tabla Órdenes
+    participant Queue as SQS commands
+    participant Inventory as Inventory worker
+    participant IDB as Tabla Inventario
+    participant Timers as SQS expirations
+    participant Tick as Scheduler o emisor local
 
+    Note over IDB,Timers: La reserva persistió timer outbox, publicación con delay restante 0..600 s
+    Tick->>Timers: SweepExpiredReservations cada minuto
     Customer->>Orders: POST /orders/{id}/confirm
-    Orders->>Inventory: Consultar reserva autoritativa y comprobar propietario
-    Inventory-->>Orders: Reserva vigente y estado actual
-    Orders->>ODB: Transacción: intención de confirmación + outbox
-    Orders-->>Customer: 202, confirmación aceptada para procesamiento
-    Note over ODB,Queue: El relay publica ConfirmPurchase con commandId estable por orden
+    Note over Orders,IDB: Orders consulta primero Inventory API privada y valida propietario/deadline
+    Orders->>ODB: Transacción: confirmación + outbox con commandId estable
+    Orders-->>Customer: 202, procesamiento aceptado
+    Note over ODB,Queue: Orders worker publica ConfirmPurchase
     Queue->>Inventory: Entrega de ConfirmPurchase
     Inventory->>IDB: Transacción condicional RESERVED a PENDING_CONFIRMATION
-    IDB-->>Inventory: Transición, auditoría y outbox durables
+    IDB-->>Inventory: Estado, auditoría y outbox durables
 
-    par Intento de completar la venta
-        Inventory->>IDB: Intentar SOLD si reserva, versión y deadline siguen vigentes
-    and Intento de liberar cuando vence
-        Expirer->>IDB: Intentar AVAILABLE si deadline alcanzado y estado no final
+    par Intento de completar venta
+        Inventory->>IDB: Intentar SOLD si versión y deadline siguen vigentes
+    and Expiración por loop independiente
+        Timers->>Inventory: ExpireReservation o SweepExpiredReservations
+        Note over Inventory,Timers: Timer temprano cambia visibilidad, sin ACK ni extensión del deadline
+        Note over Inventory,IDB: Sweep requiere lease global antes de queries paginadas, sin Scan
+        Inventory->>IDB: Intentar AVAILABLE si deadline alcanzado y estado no final
     end
 
-    alt Gana la venta válida
-        IDB-->>Inventory: SOLD, entradas y contadores actualizados atómicamente
-        IDB-->>Expirer: Condición no satisfecha, releer estado final y no liberar
-    else Gana la expiración
-        IDB-->>Expirer: Reserva completa liberada + auditoría + outbox
-        IDB-->>Inventory: Condición no satisfecha, resultado EXPIRED, sin venta
+    alt Gana venta válida
+        IDB-->>Inventory: SOLD y contadores atómicos, expiración relee y no libera
+    else Gana expiración
+        IDB-->>Inventory: Reserva completa liberada, confirmación no puede vender
     end
-
-    Inventory->>Queue: ACK únicamente después del resultado terminal durable
+    Inventory->>Queue: ACK después del resultado durable
+    Inventory->>Timers: ACK cuando timer concluyó, nunca si todavía es temprano
     opt Caída posterior al commit y anterior al ACK
         Queue->>Inventory: Redelivery del mismo comando
-        Inventory->>IDB: Consultar inbox y resultado terminal
-        IDB-->>Inventory: Resultado existente, no repetir efectos
+        Inventory->>IDB: Leer resultado y versión existentes
+        IDB-->>Inventory: No repetir efectos ni revertir estado final
         Inventory->>Queue: ACK
     end
 ```
 
 La confirmación y la expiración compiten mediante condiciones sobre la misma reserva y sus entradas. Una operación no puede liberar la asignación de otra reserva posterior. Cambiar a `PENDING_CONFIRMATION` no amplía los diez minutos.
 
-El reloj se inyecta para pruebas y cada intento comprueba el plazo. El sistema no promete exactitud física al milisegundo: el barrido tiene un objetivo de retraso medible y ninguna demora de barrido autoriza una confirmación vencida.
+El reloj se inyecta y cada intento comprueba el plazo. SQS no garantiza puntualidad al segundo; el timer usa el deadline original y el Sweep periódico recupera trabajo con lease/cooldown global antes de queries. Ningún retraso autoriza confirmar después de 600 s. Un timer antiguo no libera otra reserva, SOLD ni COMPLIMENTARY.
 
 ## 5. Estados oficiales de una entrada
 
@@ -300,61 +311,70 @@ El gate de JaCoCo mantiene al menos 90 % de líneas y ramas unitarias por servic
 ```mermaid
 flowchart TB
     User["Cliente autenticado"]
-    GitHub["GitHub Actions<br/>Plan y despliegue explícitos<br/>OIDC limitado al ambiente"]
+    GitHub["GitHub Actions / ticketing-infra<br/>Plan y despliegue autorizados<br/>OIDC limitado al ambiente"]
 
-    subgraph Account["Cuenta AWS del ambiente: DEV, QA o PROD"]
-        Cognito["Cognito<br/>Identidad del ambiente"]
-        APIGW["API Gateway HTTP API<br/>JWT, scopes y rutas públicas"]
-        Role["Roles de plan y despliegue<br/>Cuenta y ambiente esperados"]
-        SQS["SQS Standard y DLQ<br/>Colas propias del ambiente"]
-        Dynamo[("DynamoDB<br/>Datos separados por servicio")]
-        ECR["ECR<br/>Imágenes fijadas por digest"]
+    subgraph Account["AWS por ambiente; despliegue real pendiente de verificación"]
+        Cognito["Cognito del ambiente"]
+        APIGW["HTTP API Gateway<br/>JWT, overwrite de identidad y nueve rutas"]
+        Role["Roles CI de plan y apply separados"]
+        Commands["SQS: inventory-commands<br/>order-events y catalog-events"]
+        Expiry["SQS: inventory-expirations<br/>Timer con delay restante 0..600 s"]
+        ConsumeDLQ["Cuatro DLQ de consumo<br/>Una por cola principal"]
+        Scheduler["EventBridge Scheduler<br/>Sweep cada minuto; sin Lambda"]
+        SchedulerDLQ["Quinta DLQ<br/>Fallo de entrega Scheduler"]
+        Dynamo[("DynamoDB<br/>Una tabla por contexto")]
+        ECR["ECR<br/>Tres imágenes por digest"]
         Logs["CloudWatch<br/>Logs, métricas y alarmas"]
-        S3Layers["S3<br/>Capas de imágenes ECR"]
-        S3State[("Bucket S3 de estado Terraform<br/>Solo roles CI y bootstrap")]
+        S3Layers["S3 / capas ECR"]
+        S3State[("S3 / estado Terraform<br/>Solo roles CI y bootstrap")]
 
-        subgraph VPC["VPC privada del ambiente: dos zonas"]
-            VpcLink["VPC Link<br/>Security group de ingreso"]
-            ALB["ALB interno<br/>Sin rutas públicas internal"]
+        subgraph VPC["VPC de dos zonas; seis ECS services, tres imágenes"]
+            VpcLink["VPC Link"]
+            ALB["ALB interno<br/>Solo target groups API"]
             InterfaceEP["Interface endpoints<br/>SQS, ECR API, ECR DKR y Logs"]
             GatewayEP["Gateway endpoints<br/>DynamoDB y S3"]
-
-            subgraph AZA["Zona A: subred privada"]
-                ECS_A["Tareas ECS Fargate<br/>Catálogo, Órdenes e Inventario<br/>Task role propio por servicio"]
+            subgraph AZA["Zona A privada"]
+                API_A["APIs: Catalog, Orders, Inventory<br/>Réplicas según política del ambiente"]
+                Worker_A["Workers de los tres contextos<br/>Sin ingreso HTTP de negocio"]
             end
-
-            subgraph AZB["Zona B: subred privada"]
-                ECS_B["Tareas ECS Fargate<br/>Réplicas según configuración IaC"]
+            subgraph AZB["Zona B privada"]
+                API_B["Réplicas API configuradas"]
+                Worker_B["Réplicas worker configuradas"]
             end
-
             VpcLink --> ALB
-            ALB --> ECS_A
-            ALB --> ECS_B
-            ECS_A --> InterfaceEP
-            ECS_B --> InterfaceEP
-            ECS_A --> GatewayEP
-            ECS_B --> GatewayEP
+            ALB --> API_A
+            ALB --> API_B
+            Worker_A -->|"SQS por task role"| InterfaceEP
+            Worker_B --> InterfaceEP
+            API_A --> GatewayEP
+            API_B --> GatewayEP
+            Worker_A --> GatewayEP
+            Worker_B --> GatewayEP
+            NoteRoles["API y worker separados por contexto<br/>Task role por rol; APIs sin SQS<br/>Sin NAT ni IP pública"]
         end
 
         APIGW -->|"Integración privada"| VpcLink
-        InterfaceEP --> SQS
+        InterfaceEP --> Commands
+        InterfaceEP --> Expiry
         InterfaceEP --> ECR
         InterfaceEP --> Logs
         GatewayEP --> Dynamo
         GatewayEP --> S3Layers
+        Scheduler -->|"SweepExpiredReservations"| Expiry
+        Scheduler -.->|"Error de entrega"| SchedulerDLQ
+        Commands -.->|"Redrive por consumo"| ConsumeDLQ
+        Expiry -.->|"Redrive por consumo"| ConsumeDLQ
     end
 
     User -->|"Autenticarse"| Cognito
     User -->|"HTTPS y JWT"| APIGW
-    Cognito -.->|"Emisor y claves para validar JWT"| APIGW
-    GitHub -->|"Credenciales temporales OIDC"| Role
-    Role -->|"Acceso al estado y lock autorizados"| S3State
+    Cognito -.->|"Emisor y claves"| APIGW
+    GitHub -->|"OIDC temporal"| Role
+    Role -->|"Estado y lock autorizados"| S3State
     Role -.->|"Aplicar IaC autorizada"| VPC
-    Role -.->|"Configurar recursos del ambiente"| Dynamo
-    Role -.->|"Configurar recursos del ambiente"| SQS
 ```
 
-La topología se instancia por ambiente con estado, cuenta, VPC, tablas, colas, identidad, permisos y configuración independientes. PROD prevé al menos dos tareas por servicio; DEV y QA pueden comenzar con una según las variables del plan. El dibujo no implica que exista ya alta disponibilidad demostrada.
+La topología se instancia por ambiente con estado, cuenta, VPC, tablas, colas, identidad, permisos y configuración independientes. Son seis servicios ECS (API/worker por contexto) y tres imágenes. PROD prevé al menos dos tareas por rol; DEV y QA pueden comenzar con una por rol. La distribución dibujada entre zonas no afirma que cada contexto tenga réplicas en ambas con mínimos de una. El dibujo no implica que exista ya alta disponibilidad demostrada.
 
 - Sin NAT Gateway ni IP pública en las tareas.
 - Sin descargas de paquetes al arrancar; imágenes completas y verificadas.

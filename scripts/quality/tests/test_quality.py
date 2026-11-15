@@ -161,7 +161,7 @@ class ValidationTest(unittest.TestCase):
                 "images": {s: f"registry.invalid/{s}@sha256:" + "d" * 64 for s in quality.SERVICES},
                 "sonar": {s: {"project": "ticketing-" + s, "commit": sha, "qualityGate": "OK",
                                "analysisId": s, "ceTaskId": s, "metrics": cls.metrics()} for s in quality.SERVICES},
-                "checks": {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")}}
+                "checks": {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")}}
 
     def test_manifest_accepts_same_tree_different_merge_sha(self):
         quality.verify_manifest(self.manifest(), "b" * 40)
@@ -193,6 +193,12 @@ class ValidationTest(unittest.TestCase):
         hotspots = self.metrics() | {"security_hotspots": "1", "security_hotspots_reviewed": "0"}
         with self.assertRaises(quality.QualityError):
             quality.validate_sonar_metrics(hotspots)
+
+    def test_sonar_non_finite_and_malformed_metrics_fail_closed(self):
+        for name in (*self.metrics(), "security_hotspots", "security_hotspots_reviewed"):
+            for invalid in ("NaN", "Infinity", "-Infinity", "invalid", "", None):
+                with self.subTest(metric=name, invalid=invalid), self.assertRaises(quality.QualityError):
+                    quality.validate_sonar_metrics(self.metrics() | {name: invalid})
 
     def test_sonar_analysis_with_old_sha_fails(self):
         responses = [{"task": {"componentKey": "ticketing-orders", "status": "SUCCESS", "analysisId": "analysis"}},

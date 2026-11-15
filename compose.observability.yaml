@@ -1,0 +1,85 @@
+services:
+  catalog: &traced
+    environment:
+      TRACING_ENABLED: "true"
+      TRACING_SAMPLE_PROBABILITY: "1.0"
+  orders: *traced
+  inventory: *traced
+  catalog-worker: *traced
+  orders-worker: *traced
+  inventory-worker: *traced
+  prometheus:
+    networks: [ticketing]
+    image: prom/prometheus@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    profiles: [observability]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=24h"]
+    ports: ["127.0.0.1:19090:9090"]
+    volumes:
+      - ./config/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    mem_limit: 384m
+    cpus: 0.5
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+  tempo:
+    networks: [ticketing]
+    image: grafana/tempo@sha256:1ce31d6d7ffab62189685e8c47881d4a561c5d38bd0dbd66e40ca83cef07923d
+    profiles: [observability]
+    command: ["-config.file=/etc/tempo.yaml", "-backend-scheduler.provider.work.compaction.block-retention=24h", "-backend-worker.compaction.block-retention=24h"]
+    ports: ["127.0.0.1:13200:3200"]
+    volumes:
+      - ./config/observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    mem_limit: 384m
+    cpus: 0.5
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+  otel-collector:
+    networks: [ticketing]
+    image: otel/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+    profiles: [observability]
+    command: ["--config=/etc/otel/config.yaml"]
+    ports: ["127.0.0.1:13133:13133"]
+    volumes:
+      - ./config/observability/otel.yaml:/etc/otel/config.yaml:ro
+    depends_on: [tempo]
+    user: "10001:10001"
+    mem_limit: 192m
+    cpus: 0.5
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+  grafana:
+    networks: [ticketing]
+    image: grafana/grafana@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+    profiles: [observability]
+    ports: ["127.0.0.1:13000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Run scripts/local/setup_observability.py first}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/observability/grafana:/etc/grafana/provisioning:ro
+      - ./config/observability/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus, tempo]
+    mem_limit: 384m
+    cpus: 0.5
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+volumes:
+  prometheus-data:
+  tempo-data:
+  grafana-data:

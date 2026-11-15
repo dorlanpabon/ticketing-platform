@@ -1,52 +1,58 @@
 flowchart TB
     Client["Cliente o colección de pruebas"]
-    Entry["Entrada autenticada<br/>Rutas públicas autorizadas"]
+    Entry["Entrada autenticada<br/>Nueve rutas públicas autorizadas"]
 
-    subgraph CatalogBoundary["Microservicio Catálogo"]
-        Catalog["API WebFlux y consumidor<br/>Publicación de eventos"]
-        CatalogData[("Datos de Catálogo<br/>Eventos, inbox y outbox")]
-        CatalogRelay["Relay de outbox"]
+    subgraph CatalogBoundary["Catálogo: una imagen, dos roles"]
+        Catalog["API WebFlux<br/>Eventos"]
+        CatalogWorker["Worker<br/>Relay outbox y consumidor"]
+        CatalogData[("Tabla Catálogo<br/>Eventos, inbox y outbox")]
         Catalog -->|"Transacción local"| CatalogData
-        CatalogData --> CatalogRelay
+        CatalogWorker --> CatalogData
     end
 
-    subgraph OrderBoundary["Microservicio Órdenes"]
-        Orders["API WebFlux y coordinador<br/>Intenciones y seguimiento de saga"]
-        OrderData[("Datos de Órdenes<br/>Órdenes, idempotencia, inbox y outbox")]
-        OrderRelay["Relay de outbox"]
+    subgraph OrderBoundary["Órdenes: una imagen, dos roles"]
+        Orders["API WebFlux<br/>Intenciones y consultas"]
+        OrderWorker["Worker<br/>Relay, proyección y reconciliación"]
+        OrderData[("Tabla Órdenes<br/>Idempotencia, inbox y outbox")]
         Orders -->|"Transacción local"| OrderData
-        OrderData --> OrderRelay
+        OrderWorker --> OrderData
     end
 
-    subgraph InventoryBoundary["Microservicio Inventario"]
-        Inventory["API WebFlux y consumidor<br/>Autoridad sobre entradas y reservas"]
-        InventoryData[("Datos de Inventario<br/>Entradas, reservas, 16 contadores por evento<br/>Auditoría, inbox y outbox")]
-        InventoryRelay["Relay de outbox"]
-        Expirer["Worker de expiración<br/>Consulta por vencimiento; sin Scan"]
+    subgraph InventoryBoundary["Inventario: una imagen, dos roles"]
+        Inventory["API WebFlux<br/>Consultas y reserva interna"]
+        InventoryWorker["Worker<br/>Loops commands y expirations<br/>Relay outbox"]
+        InventoryData[("Tabla Inventario<br/>Entradas, reservas, 16 contadores<br/>Auditoría, outbox y leases")]
         Inventory -->|"Transacciones condicionales"| InventoryData
-        Expirer -->|"Liberación de reserva completa"| InventoryData
-        InventoryData --> InventoryRelay
+        InventoryWorker -->|"Misma autoridad e invariantes"| InventoryData
     end
 
-    Commands["SQS Standard<br/>inventory-commands"]
-    OrderEvents["SQS Standard<br/>order-events"]
-    CatalogEvents["SQS Standard<br/>catalog-events"]
-    CommandsDLQ["DLQ de comandos"]
-    OrdersDLQ["DLQ de eventos de Órdenes"]
-    CatalogDLQ["DLQ de eventos de Catálogo"]
+    Commands["SQS inventory-commands"]
+    Expirations["SQS inventory-expirations<br/>ExpireReservation y SweepExpiredReservations"]
+    OrderEvents["SQS order-events"]
+    CatalogEvents["SQS catalog-events"]
+    CommandsDLQ["DLQ commands"]
+    ExpirationsDLQ["DLQ expirations"]
+    OrdersDLQ["DLQ order-events"]
+    CatalogDLQ["DLQ catalog-events"]
+    LocalTick["Emisor local único cada minuto<br/>AWS: Scheduler + DLQ de entrega"]
 
     Client --> Entry
     Entry --> Catalog
     Entry --> Orders
     Entry -->|"Solo consultas públicas"| Inventory
-    Orders -->|"Reserva idempotente y consulta internas"| Inventory
-    CatalogRelay -->|"Preparar inventario"| Commands
-    OrderRelay -->|"Comprar, confirmar o asignar cortesía"| Commands
-    Commands --> Inventory
-    InventoryRelay -->|"Snapshot versionado de reserva"| OrderEvents
-    OrderEvents --> Orders
-    InventoryRelay -->|"Inventario preparado"| CatalogEvents
-    CatalogEvents --> Catalog
-    Commands -.->|"Tras reintentos agotados"| CommandsDLQ
-    OrderEvents -.->|"Tras reintentos agotados"| OrdersDLQ
-    CatalogEvents -.->|"Tras reintentos agotados"| CatalogDLQ
+    Orders -->|"Reserva idempotente y consulta privadas"| Inventory
+    OrderWorker -->|"Reconciliación privada"| Inventory
+    CatalogWorker -->|"ProvisionInventory"| Commands
+    OrderWorker -->|"Compra, confirmación o cortesía"| Commands
+    Commands --> InventoryWorker
+    InventoryWorker -->|"Timer outbox; delay restante 0..600 s"| Expirations
+    LocalTick -->|"Sweep; lease global antes de queries"| Expirations
+    Expirations --> InventoryWorker
+    InventoryWorker -->|"Snapshot versionado"| OrderEvents
+    OrderEvents --> OrderWorker
+    InventoryWorker -->|"InventoryReady"| CatalogEvents
+    CatalogEvents --> CatalogWorker
+    Commands -.->|"Redrive"| CommandsDLQ
+    Expirations -.->|"Redrive"| ExpirationsDLQ
+    OrderEvents -.->|"Redrive"| OrdersDLQ
+    CatalogEvents -.->|"Redrive"| CatalogDLQ

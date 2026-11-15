@@ -10,6 +10,8 @@ Stack de referencia: Java 25, Spring Boot 4, WebFlux, scaffold Clean Architectur
 
 > La solución separa Catálogo, Órdenes e Inventario. Inventario es la única autoridad sobre las entradas: aplica cambios condicionales y transacciones locales para impedir asignaciones dobles. La comunicación entre servicios admite duplicados y fallos, por lo que se recupera mediante idempotencia, outbox, versiones y reconciliación. Cada commit se analiza; un candidato debe aprobar todos los controles, incluido Sonar en `develop`, antes de promocionarse.
 
+Precisar la topología: tres imágenes y seis roles desplegables, API/worker por contexto; cuatro colas principales y cuatro DLQ de consumo. AWS agrega la quinta DLQ para entrega del Scheduler. El timer individual usa el deadline original (máximo 600 s), y la recuperación periódica se envía cada minuto con lease global antes de queries. No prometer polling por réplica cada segundo ni publicación outbox p95 de un segundo sin medición.
+
 Esta explicación debe poder sostenerse con una transición real, una prueba concurrente y una recuperación reproducible. Un diagrama o un porcentaje de cobertura, por separado, no prueban esas garantías.
 
 ## 2. Guion de 20 minutos
@@ -86,7 +88,7 @@ No reducir silenciosamente los diez minutos del contrato para hacer más corta l
 | ¿Qué costo tiene ese particionado? | La disponibilidad lee dieciséis contadores transaccionalmente y las compras pueden actualizar varios. El diseño intercambia más operaciones por menor contención. | Medición de latencia, cantidad de operaciones y estimación de consumo. |
 | ¿Dieciséis lecturas consistentes independientes son un snapshot? | No necesariamente. La consulta utilizará `TransactGetItems` para una vista conjunta de los contadores. | Prueba de disponibilidad durante transiciones concurrentes. |
 | ¿Por qué no liberar con TTL? | TTL limpia registros de manera eventual; no es un temporizador puntual. El deadline se comprueba en negocio y la liberación usa un proceso explícito. | Tests de expiración sin depender del borrado TTL. |
-| ¿Qué ocurre si el barrido se retrasa? | La reserva ya no puede confirmarse cuando venció. El barrido materializa la devolución y una compra puede recuperar una reserva vencida completa antes de reclamar sus entradas. La disponibilidad puede ser conservadora durante el retraso; si supera el objetivo, no se presentará como actualizada. | Métrica de atraso, prueba con worker detenido y recuperación de reserva completa. |
+| ¿Qué ocurre si el barrido se retrasa? | La reserva ya no puede confirmarse cuando venció. El camino principal es ExpireReservation por SQS; Scheduler envía recuperación cada minuto. Un lease global precede queries. Una compra también recupera la reserva vencida completa. Disponibilidad devuelve 503 si el retraso supera cinco segundos. | Timer real, duplicados, lease, paginación, worker detenido y recuperación sin ampliar deadline. |
 | ¿Qué reloj decide el vencimiento? | Inventario evalúa un reloj UTC inyectable, con deadline persistido e inmutable. Cada retry vuelve a comprobarlo. La transacción serializa la disputa de estado; el diseño no promete precisión física ilimitada de reloj o red. | Tests de frontera temporal y carrera; política de sincronización de reloj documentada. |
 | ¿Puedo confirmar antes del deadline y vender mucho después? | No. La confirmación asíncrona debe superar las verificaciones de plazo al completar. Entrar en `PENDING_CONFIRMATION` no extiende la reserva. | Mensaje de confirmación demorado y expiración antes de `SOLD`. |
 | ¿Por qué guardar rechazos de reserva? | Para que un reintento antiguo no reserve después una solicitud que ya recibió un resultado terminal de rechazo. La creación de ese resultado también se condiciona para competir correctamente con un duplicado exitoso. | Carrera entre reserva duplicada, rechazo y nueva disponibilidad. |
@@ -205,7 +207,7 @@ Estas mejoras se presentarán como trabajo futuro y no como capacidades entregad
 - Políticas de retención de auditoría y datos definidas con los responsables del sistema.
 - Protección de abuso distribuido y controles de admisión para eventos de demanda extrema.
 - Análisis nativo de ramas/PR si se adopta una edición Sonar que lo soporte.
-- Separación operativa de API y workers cuando la medición justifique escalarlos de forma independiente.
+- Ajustar el escalado de APIs y workers ya separados mediante mediciones; no presentar esa separación existente como mejora futura ni afirmar capacidad cloud a partir de emuladores.
 - Integración de pagos únicamente con un contrato explícito de autorización, confirmación, expiración y compensación.
 
 ## 9. Cierre de la presentación

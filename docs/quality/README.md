@@ -40,8 +40,10 @@ trusted policy hash and tool versions. No result cache is currently used.
 
 Gitleaks always executes with full redaction. PMD analyzes production Java with
 the actual compiled dependency classpath; the container cannot alter tracked
-source before analysis. Checkov examines Dockerfiles and GitHub workflows, plus
-Terraform if present. The infrastructure repository owns Terraform/TFLint gates.
+source before analysis. Application Checkov evidence covers Dockerfiles and
+GitHub workflows. The independent [ticketing-infra repository](../../../ticketing-infra/README.md)
+owns Terraform, TFLint and infrastructure Checkov gates; an application manifest
+does not certify infrastructure merely because it references `infraGitSha`.
 Trivy examines dependency artifacts and candidate images. An inapplicable
 category is recorded explicitly. Generated scanner reports and caches stay
 outside Git.
@@ -69,19 +71,54 @@ three projects, and no global Execute Analysis/Create Projects permission.
 The build receives neither analysis nor reader credentials; each scanner process
 receives only its own project token. Evidence retrieval uses the read-only token.
 
-Only an exact trusted `develop` push updates `ticketing-catalog`,
-`ticketing-orders` and `ticketing-inventory`. There are no `sonar.branch.name` or
+An exact trusted `develop` push in CI, or explicit local mode on a clean
+`develop` checkout, updates `ticketing-catalog`, `ticketing-orders` and
+`ticketing-inventory`. There are no `sonar.branch.name` or
 PR parameters. Community is not presented as native multi-branch/PR analysis.
-All projects are serialized to prevent cross-candidate metrics being attributed
-to the wrong SHA.
+CI serializes the projects; do not run a local analysis concurrently with CI.
+Evidence checks the compute task, revision and latest analysis before and after
+reading project metrics to reject a competing candidate.
+
+After merging to `develop`, committing all source/configuration changes and
+starting the local quality profile, load only the three scoped analysis tokens,
+the read-only `SONAR_READ_TOKEN` and `SONAR_HOST_URL` into the process environment.
+Use JDK 25, keep AWS credentials absent, and run:
+
+```sh
+python scripts/quality/sonar_develop.py --local
+```
+
+Local mode rejects CI/PR environment markers; never fabricate `GITHUB_*` values.
+It builds an isolated worktree at the actual HEAD and checks that branch, HEAD
+and tracked/untracked source remain unchanged throughout. Reports are written
+to `build/quality/sonar-local/<actual-SHA>/` with `executionContext: local`,
+separately from CI's `build/quality/sonar/`. Local success is not a GitHub Actions
+run or remote branch-protection evidence. Before worktree cleanup, exact JaCoCo,
+JUnit and PIT XML files are retained under `reports/`; `report-manifest.json`
+records their relative paths and SHA-256 hashes. A successful build must produce
+the merged JaCoCo XML, JUnit XML and model/usecase PIT mutation XML. Failed runs
+also retain available XML and sanitized compute-task/analysis identifiers for
+diagnosis; this diagnostic manifest is never a successful gate result. Console
+logs, task URLs and credentials are not copied.
+The scanner's own JVM heap is capped
+at 512 MiB; build processes never receive scanner credentials or generic JVM
+options from the credential environment.
 
 `sonar_develop.py` builds and tests, requires aggregate **unit** coverage >=90%
 for lines and branches, runs the scanner with a 600-second gate wait, then checks
 the specific compute task, analysis ID, SCM revision, gate and imported metrics.
 Global coverage >=90%, duplication <=3%, ratings A, zero bugs/vulnerabilities and
 reviewed hotspots are mandatory. New-code coverage is also checked when present.
-Empty or missing coverage is rejected. A failed/offline Sonar server blocks
+Missing, malformed or non-finite metrics are rejected. A failed/offline Sonar server blocks
 promotion; unit tests, PIT, concurrency and security scanners remain independent.
+
+The pinned Community Build 26.11 supports Java 25, but does not bundle the
+advanced Java symbolic-execution rules for issues such as null dereferences,
+resource leaks and XXE. No optional advanced analyzer has been installed or
+validated here. A green gate certifies the active installed rule set, not the
+commercial security engine. See the official [Java support and advanced-rule
+scope](https://docs.sonarsource.com/sonarqube-community-build/analyzing-source-code/languages/java#advanced-java-rules)
+and [Gradle scanner requirements](https://docs.sonarsource.com/sonarqube-server/analyzing-source-code/scanners/sonarscanner-for-gradle).
 
 ## Repository configuration
 
@@ -110,9 +147,20 @@ infrastructure pipeline must check `infraGitSha` against its own approved plan.
 
 The application acceptance runner must write `build/quality/acceptance.json`
 with exact `commit`, `tree`, and `checks` entries for `integration`, `architecture`,
-`concurrency`, `recovery`, `containerSmoke`. Every entry needs `status: passed`
+`concurrency`, `recovery`, `containerSmoke`, **`expiry`**. The report must declare
+`dirty: false`; development evidence with `--allow-dirty` cannot be promoted.
+The expiry check waits ten real minutes with HTTP lazy expiry and periodic
+recovery disabled, checks authoritative persisted state and observes actual SQS
+consumer processing. Unit tests with a controlled clock cannot replace it.
+Every entry needs `status: passed`
 and an `evidence` path to a nonempty report within the repository. Missing tests
 or evidence block publication instead of producing an optimistic green manifest.
+
+The separate [Postman/Newman runner](../../scripts/postman/README.md) executes the
+user-facing collection and records a redacted local report. It complements the
+acceptance suite; it does not replace the mandatory expiry, concurrency,
+architecture, recovery, Sonar or security gates. A collection import or runner
+unit test is not evidence that its HTTP requests succeeded.
 
 Each develop -> release and release -> main PR includes a body line
 `Candidate-Run: <successful Candidate workflow run ID>`. The trusted promotion
