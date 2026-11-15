@@ -1,41 +1,44 @@
 sequenceDiagram
     autonumber
     actor Customer as Comprador
-    participant Orders as Órdenes
-    participant ODB as Datos de Órdenes
-    participant Queue as SQS de comandos
-    participant Inventory as Inventario
-    participant IDB as Datos de Inventario
-    participant Expirer as Worker de expiración
+    participant Orders as Órdenes API
+    participant ODB as Tabla Órdenes
+    participant Queue as SQS commands
+    participant Inventory as Inventory worker
+    participant IDB as Tabla Inventario
+    participant Timers as SQS expirations
+    participant Tick as Scheduler o emisor local
 
+    Note over IDB,Timers: La reserva persistió timer outbox, publicación con delay restante 0..600 s
+    Tick->>Timers: SweepExpiredReservations cada minuto
     Customer->>Orders: POST /orders/{id}/confirm
-    Orders->>Inventory: Consultar reserva autoritativa y comprobar propietario
-    Inventory-->>Orders: Reserva vigente y estado actual
-    Orders->>ODB: Transacción: intención de confirmación + outbox
-    Orders-->>Customer: 202, confirmación aceptada para procesamiento
-    Note over ODB,Queue: El relay publica ConfirmPurchase con commandId estable por orden
+    Note over Orders,IDB: Orders consulta primero Inventory API privada y valida propietario/deadline
+    Orders->>ODB: Transacción: confirmación + outbox con commandId estable
+    Orders-->>Customer: 202, procesamiento aceptado
+    Note over ODB,Queue: Orders worker publica ConfirmPurchase
     Queue->>Inventory: Entrega de ConfirmPurchase
     Inventory->>IDB: Transacción condicional RESERVED a PENDING_CONFIRMATION
-    IDB-->>Inventory: Transición, auditoría y outbox durables
+    IDB-->>Inventory: Estado, auditoría y outbox durables
 
-    par Intento de completar la venta
-        Inventory->>IDB: Intentar SOLD si reserva, versión y deadline siguen vigentes
-    and Intento de liberar cuando vence
-        Expirer->>IDB: Intentar AVAILABLE si deadline alcanzado y estado no final
+    par Intento de completar venta
+        Inventory->>IDB: Intentar SOLD si versión y deadline siguen vigentes
+    and Expiración por loop independiente
+        Timers->>Inventory: ExpireReservation o SweepExpiredReservations
+        Note over Inventory,Timers: Timer temprano cambia visibilidad, sin ACK ni extensión del deadline
+        Note over Inventory,IDB: Sweep requiere lease global antes de queries paginadas, sin Scan
+        Inventory->>IDB: Intentar AVAILABLE si deadline alcanzado y estado no final
     end
 
-    alt Gana la venta válida
-        IDB-->>Inventory: SOLD, entradas y contadores actualizados atómicamente
-        IDB-->>Expirer: Condición no satisfecha, releer estado final y no liberar
-    else Gana la expiración
-        IDB-->>Expirer: Reserva completa liberada + auditoría + outbox
-        IDB-->>Inventory: Condición no satisfecha, resultado EXPIRED, sin venta
+    alt Gana venta válida
+        IDB-->>Inventory: SOLD y contadores atómicos, expiración relee y no libera
+    else Gana expiración
+        IDB-->>Inventory: Reserva completa liberada, confirmación no puede vender
     end
-
-    Inventory->>Queue: ACK únicamente después del resultado terminal durable
+    Inventory->>Queue: ACK después del resultado durable
+    Inventory->>Timers: ACK cuando timer concluyó, nunca si todavía es temprano
     opt Caída posterior al commit y anterior al ACK
         Queue->>Inventory: Redelivery del mismo comando
-        Inventory->>IDB: Consultar inbox y resultado terminal
-        IDB-->>Inventory: Resultado existente, no repetir efectos
+        Inventory->>IDB: Leer resultado y versión existentes
+        IDB-->>Inventory: No repetir efectos ni revertir estado final
         Inventory->>Queue: ACK
     end

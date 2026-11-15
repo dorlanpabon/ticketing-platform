@@ -1,0 +1,455 @@
+{
+  "info": {
+    "name": "Ticketing — local acceptance",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Run the complete collection against Docker Compose with two inventory-worker replicas. Local synthetic identities only. Reproducible runner: node scripts/postman/run.cjs run (500 ms delay, 15 s request timeout, 6 min total timeout). Each iteration starts with a fresh runId and isolated event; data is never wiped. Real expiry is verified separately by scripts/acceptance/verify.py --checks expiry (about 10 minutes)."
+  },
+  "variable": [
+    {
+      "key": "catalog",
+      "value": "http://localhost:18080"
+    },
+    {
+      "key": "orders",
+      "value": "http://localhost:18081"
+    },
+    {
+      "key": "inventory",
+      "value": "http://localhost:18082"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.info.requestName === \"01 Create event\") {",
+          "  pm.collectionVariables.set(\"runId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+          "  [\"eventId\", \"orderId\", \"expiresAt\", \"courtesyId\"].forEach(key => pm.collectionVariables.unset(key));",
+          "  [\"02 Wait for ACTIVE\", \"04 Wait for reservation\", \"07 Wait for SOLD\", \"10 Wait for COMPLIMENTARY\"].forEach(name => pm.variables.unset(\"poll_\" + name));",
+          "  pm.collectionVariables.set(\"futureDate\", new Date(Date.now() + 30 * 86400000).toISOString());",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Create event",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-admin"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "event-{{runId}}"
+          }
+        ],
+        "url": "{{catalog}}/api/v1/events",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Postman {{runId}}\",\n  \"venue\": \"Local acceptance\",\n  \"startsAt\": \"{{futureDate}}\",\n  \"capacity\": 20\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+              "pm.collectionVariables.set(\"eventId\", pm.response.json().eventId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Wait for ACTIVE",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{catalog}}/api/v1/events/{{eventId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "const body = pm.response.json(); const attempt = Number(pm.variables.get(\"poll_\" + pm.info.requestName) || 0) + 1; if (body.status !== \"ACTIVE\" && attempt < 120) { pm.variables.set(\"poll_\" + pm.info.requestName, attempt); pm.execution.setNextRequest(pm.info.requestName); } else { pm.test(\"status = ACTIVE\", () => pm.expect(body.status).to.eql(\"ACTIVE\")); pm.variables.unset(\"poll_\" + pm.info.requestName); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Reserve two tickets",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "reserve-{{runId}}"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{eventId}}\",\n  \"ticketIds\": [\n    \"1\",\n    \"2\"\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+              "const b = pm.response.json(); pm.collectionVariables.set(\"orderId\", b.orderId); pm.collectionVariables.set(\"expiresAt\", b.expiresAt);",
+              "pm.test(\"Original reservation deadline is ten minutes\", () => pm.expect(Date.parse(b.expiresAt) - Date.parse(b.requestedAt)).to.eql(600000));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Wait for reservation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders/{{orderId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "const body = pm.response.json(); const attempt = Number(pm.variables.get(\"poll_\" + pm.info.requestName) || 0) + 1; if (body.workflowStatus !== \"AWAITING_CONFIRMATION\" && attempt < 120) { pm.variables.set(\"poll_\" + pm.info.requestName, attempt); pm.execution.setNextRequest(pm.info.requestName); } else { pm.test(\"workflowStatus = AWAITING_CONFIRMATION\", () => pm.expect(body.workflowStatus).to.eql(\"AWAITING_CONFIRMATION\")); pm.variables.unset(\"poll_\" + pm.info.requestName); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Idempotent retry",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "reserve-{{runId}}"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{eventId}}\",\n  \"ticketIds\": [\n    \"2\",\n    \"1\"\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+              "pm.test(\"Same order and deadline\", () => { const b = pm.response.json(); pm.expect(b.orderId).to.eql(pm.collectionVariables.get(\"orderId\")); pm.expect(b.expiresAt).to.eql(pm.collectionVariables.get(\"expiresAt\")); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Confirm",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "confirm-{{runId}}"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders/{{orderId}}/confirm"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 Wait for SOLD",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders/{{orderId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "const body = pm.response.json(); const attempt = Number(pm.variables.get(\"poll_\" + pm.info.requestName) || 0) + 1; if (body.status !== \"SOLD\" && attempt < 120) { pm.variables.set(\"poll_\" + pm.info.requestName, attempt); pm.execution.setNextRequest(pm.info.requestName); } else { pm.test(\"status = SOLD\", () => pm.expect(body.status).to.eql(\"SOLD\")); pm.variables.unset(\"poll_\" + pm.info.requestName); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 Deny another customer",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-2"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders/{{orderId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 404\", () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 Complimentary ticket",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-admin"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "courtesy-{{runId}}"
+          }
+        ],
+        "url": "{{orders}}/api/v1/admin/complimentary-orders",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{eventId}}\",\n  \"ticketIds\": [\n    \"3\"\n  ],\n  \"beneficiaryId\": \"local-customer-1\",\n  \"reason\": \"Acceptance speaker\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+              "pm.collectionVariables.set(\"courtesyId\", pm.response.json().orderId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 Wait for COMPLIMENTARY",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders/{{courtesyId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "const body = pm.response.json(); const attempt = Number(pm.variables.get(\"poll_\" + pm.info.requestName) || 0) + 1; if (body.status !== \"COMPLIMENTARY\" && attempt < 120) { pm.variables.set(\"poll_\" + pm.info.requestName, attempt); pm.execution.setNextRequest(pm.info.requestName); } else { pm.test(\"status = COMPLIMENTARY\", () => pm.expect(body.status).to.eql(\"COMPLIMENTARY\")); pm.variables.unset(\"poll_\" + pm.info.requestName); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 Verify inventory counts",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{inventory}}/api/v1/events/{{eventId}}/availability"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"Courtesy does not count as a sale\", () => { const b = pm.response.json(); pm.expect(b.sold).to.eql(2); pm.expect(b.complimentary).to.eql(1); pm.expect(b.available).to.eql(17); });",
+              "pm.test(\"Inventory capacity is conserved\", () => { const b = pm.response.json(); pm.expect(b.reserved).to.eql(0); pm.expect(b.pendingConfirmation).to.eql(0); pm.expect(b.capacity).to.eql(b.available + b.reserved + b.pendingConfirmation + b.sold + b.complimentary); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 Reject different payload for same key",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer local-customer-1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "reserve-{{runId}}"
+          }
+        ],
+        "url": "{{orders}}/api/v1/orders",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{eventId}}\",\n  \"ticketIds\": [\n    \"4\"\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 409\", () => pm.response.to.have.status(409));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -194,6 +194,12 @@ class ValidationTest(unittest.TestCase):
         with self.assertRaises(quality.QualityError):
             quality.validate_sonar_metrics(hotspots)
 
+    def test_sonar_non_finite_and_malformed_metrics_fail_closed(self):
+        for name in (*self.metrics(), "security_hotspots", "security_hotspots_reviewed"):
+            for invalid in ("NaN", "Infinity", "-Infinity", "invalid", "", None):
+                with self.subTest(metric=name, invalid=invalid), self.assertRaises(quality.QualityError):
+                    quality.validate_sonar_metrics(self.metrics() | {name: invalid})
+
     def test_sonar_analysis_with_old_sha_fails(self):
         responses = [{"task": {"componentKey": "ticketing-orders", "status": "SUCCESS", "analysisId": "analysis"}},
                      {"analyses": [{"key": "analysis", "revision": "b" * 40}]}]

@@ -15,10 +15,10 @@ sequenceDiagram
 
     Orders->>Inventory: PUT reserva idempotente, presupuesto HTTP de 500 ms
     alt Resultado conocido dentro del presupuesto
-        Inventory->>IDB: Reserva condicional todo o nada + contadores + auditoría + outbox
+        Inventory->>IDB: Reserva todo o nada + contadores + auditoría + outbox de estado y timer
         IDB-->>Inventory: Resultado durable de éxito o rechazo
         Inventory-->>Orders: Snapshot y versión autoritativos
-        Orders->>ODB: Aplicar snapshot si su versión es posterior
+        Orders->>Orders: Responder con snapshot, proyección durable se actualiza asíncronamente
     else Timeout o dependencia inaccesible
         Note over Orders,Inventory: El resultado es desconocido, no cancelar por suposición
     end
@@ -35,4 +35,5 @@ sequenceDiagram
     Inventory->>IDB: Ejecutar la misma operación idempotente y verificar deadline
     IDB-->>Inventory: Misma reserva o resultado terminal, sin doble descuento
     Inventory->>Queue: ACK después de persistir el resultado
-    Note over Inventory,IDB: Su outbox publica el snapshot hacia Órdenes
+    Note over Inventory,IDB: Outbox publica snapshot a Órdenes y ExpireReservation a expirations
+    Note over Inventory,IDB: DelaySeconds usa el deadline original, ceil restante entre 0 y 600 s

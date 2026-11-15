@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -401,6 +402,15 @@ def sonar_request(host: str, route: str, token: str, *, data: dict | None = None
 
 
 def validate_sonar_metrics(metrics: dict[str, str]) -> None:
+    numeric = {}
+    for name, raw in metrics.items():
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise QualityError(f"Invalid Sonar metric: {name}") from exc
+        if not math.isfinite(value):
+            raise QualityError(f"Non-finite Sonar metric: {name}")
+        numeric[name] = value
     required = {"coverage": (90.0, "min"), "duplicated_lines_density": (3.0, "max"),
                 "reliability_rating": (1.0, "max"), "security_rating": (1.0, "max"),
                 "sqale_rating": (1.0, "max"), "bugs": (0.0, "max"), "vulnerabilities": (0.0, "max"),
@@ -408,12 +418,12 @@ def validate_sonar_metrics(metrics: dict[str, str]) -> None:
     for name, (limit, mode) in required.items():
         if name not in metrics:
             raise QualityError(f"Missing Sonar metric: {name}")
-        value = float(metrics[name])
+        value = numeric[name]
         if (mode == "min" and value < limit) or (mode == "max" and value > limit):
             raise QualityError(f"Sonar metric rejected: {name}")
-    if float(metrics.get("security_hotspots", "0")) > 0 and float(metrics.get("security_hotspots_reviewed", "0")) < 100:
+    if numeric.get("security_hotspots", 0) > 0 and numeric.get("security_hotspots_reviewed", 0) < 100:
         raise QualityError("Security hotspots require documented review")
-    if "new_coverage" in metrics and float(metrics["new_coverage"]) < 90:
+    if "new_coverage" in numeric and numeric["new_coverage"] < 90:
         raise QualityError("New-code coverage is below 90%")
 
 
