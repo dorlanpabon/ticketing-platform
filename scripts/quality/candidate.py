@@ -195,7 +195,7 @@ def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
         environment = os.environ.copy()
         for key in ("GH_TOKEN", "GITHUB_TOKEN", "SONAR_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
             environment.pop(key, None)
-        compose = ["docker", "compose", "-f", str(ROOT / "compose.yaml")]
+        compose = ["docker", "compose", "-f", str(ROOT / "docker-compose.yml")]
         services = ["catalog", "orders", "inventory", "catalog-worker", "orders-worker", "inventory-worker"]
         try:
             execute([*compose, "up", "-d", "--build", "--wait", "--wait-timeout", "240",

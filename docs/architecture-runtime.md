@@ -39,6 +39,7 @@ flowchart TB
   end
 
   CW -->|ProvisionInventory| Commands[SQS inventory-commands]
+  OA -->|PurchaseRequested / ComplimentaryRequested| Commands
   OW -->|PurchaseRequested / ConfirmPurchase / ComplimentaryRequested| Commands
   Commands --> IW
   IW -->|InventoryReady| CE[SQS catalog-events]
@@ -52,12 +53,12 @@ flowchart TB
 
 Cada cola principal tiene una DLQ de consumo. Scheduler tiene otra DLQ para errores al entregar su mensaje a SQS. Un fallo de entrega y un fallo del consumidor requieren diagnósticos y replays distintos.
 
-Las APIs no consumen ni publican directamente en SQS: escriben negocio e intención en una transacción de su tabla. El worker adquiere el outbox, publica y marca su entrega. Una caída entre publicación y marcado puede producir duplicados; los IDs estables, versiones, transacciones condicionales e idempotencia evitan repetir efectos. No se promete entrega exactly-once.
+Las APIs escriben negocio e intención en una transacción de su tabla. Para compras y cortesías, Orders API intenta publicar el comando persistido con el mismo mecanismo de reclamo que usa el relay. El worker recupera los envíos pendientes y publica los comandos de confirmación. Una caída entre publicación y marcado puede producir duplicados. Los IDs estables, versiones, transacciones condicionales e idempotencia evitan repetir efectos.
 
 ## Reserva y confirmación
 
 1. Orders valida identidad, selección e Idempotency-Key, persiste orden e intención de compra con `requestedAt` y `expiresAt=requestedAt+600s`. Reintentar no crea otro plazo.
-2. Tras la transacción durable, Orders responde `202 Accepted`; una orden nueva continúa en `RESERVING`. El worker publica `PurchaseRequested` desde outbox hacia SQS y el consumidor de Inventory procesa la reserva con el deadline original.
+2. Orders responde `202 Accepted` después de confirmar que SQS aceptó `PurchaseRequested`, sea en el intento actual o en uno previo. Si falta confirmación, responde `503 ORDER_ENQUEUE_UNAVAILABLE`. El relay recupera los comandos pendientes y el consumidor de Inventory aplica el deadline original.
 3. Inventory reclama entradas vencidas cuando corresponde y reserva mediante condiciones sobre estado/versión y una transacción. La reserva y su temporizador de expiración quedan persistidos con su outbox. Dos compradores concurrentes no pueden adquirir la misma entrada mediante una transición válida.
 4. Una confirmación aceptada por Orders produce ConfirmPurchase. Inventory verifica propiedad, ID del comando y deadline; transita RESERVED → PENDING_CONFIRMATION → SOLD. Si vence antes de completar, libera la retención. Un `202` de solicitud no significa venta confirmada.
 5. ReservationStateChanged actualiza Orders mediante versión de Inventory; un evento viejo no puede revertir una proyección más nueva. La reconciliación recupera eventos perdidos o retrasados consultando la autoridad.
@@ -80,13 +81,13 @@ En local no se simula una cuenta EventBridge: el único contenedor `expiry-recov
 
 SQS y Scheduler no garantizan una ejecución en el segundo exacto. El deadline de aceptación sigue siendo 600 segundos; la materialización de la liberación puede retrasarse por cola, caída o recuperación. Consultas/operaciones de Inventory también verifican expiración y recuperan entradas vencidas. TTL de DynamoDB elimina residuos después de su retención; nunca decide disponibilidad.
 
-El outbox usa un lease durable de 30 s con renovación y backoff adaptativo entre 500 ms y 10 s, más jitter de hasta 250 ms. Los followers esperan según el lease observado. Esto reduce consultas vacías y duplicación entre réplicas; una intención creada tras inactividad puede esperar el backoff. La latencia p95 debe medirse por escenario; no se garantiza un segundo para todos los casos.
+El outbox usa un lease durable de 30 s con renovación y backoff adaptativo entre 500 ms y 10 s, más jitter de hasta 250 ms. Los followers esperan según el lease observado. Esto reduce consultas vacías y duplicación entre réplicas. Una intención pendiente de recuperar por el relay puede esperar ese backoff. La latencia p95 se mide por escenario.
 
 ## Escalado y seguridad
 
 | Rol | HTTP de negocio | SQS | Escalado AWS |
 |---|---|---|---|
-| API | Activado; publicado solo por las rutas autorizadas. | Sin permisos. | Target tracking CPU, objetivo 60 %. |
+| API | Activado; publicado solo por las rutas autorizadas. | Orders requiere permiso de envío a `inventory-commands` para compras y cortesías. | Target tracking CPU, objetivo 60 %. |
 | Worker | Desactivado; conserva health/readiness. | Consume/publica solo colas del contrato. | Step scaling por backlog visible de sus colas. |
 
 El worker de Inventory consume commands y expirations de forma independiente dentro del mismo proceso. Las alarmas de escalado suman ambas colas. Scale-out añade una tarea desde 32 mensajes visibles y dos desde 160; cooldown 60 s. Scale-in exige cinco minutos con la suma de visibles e in-flight inferior a uno, retira una tarea y espera 300 s. Son parámetros iniciales que requieren pruebas de carga. Los mínimos activos conservan ejecución de outbox y recuperación.

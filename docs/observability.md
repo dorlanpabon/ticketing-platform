@@ -4,7 +4,7 @@ El perfil opcional agrega Prometheus 3.16.0, Grafana 13.3.1, Tempo 3.0.0 y OpenT
 
 ```sh
 python scripts/local/setup_observability.py
-docker compose -f compose.yaml -f compose.observability.yaml --profile observability up -d --build --scale inventory-worker=2 --wait
+docker compose -f docker-compose.yml -f compose.observability.yaml --profile observability up -d --build --scale inventory-worker=2 --wait
 ```
 
 La contraseña aleatoria de Grafana se guarda en `.env`, ignorado por Git. Usuario: `admin`. No publicar ese archivo ni sus valores. El script conserva las variables existentes de Sonar. El perfil agrega hasta 1.35 GiB de límites de memoria; detener Sonar antes de usarlo junto con la aplicación en una VM Docker de 8 GiB.

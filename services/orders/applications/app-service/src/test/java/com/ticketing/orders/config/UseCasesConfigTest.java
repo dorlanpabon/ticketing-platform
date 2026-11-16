@@ -1,17 +1,26 @@
 package com.ticketing.orders.config;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.ticketing.orders.model.gateways.InventoryPort;
+import com.ticketing.orders.model.gateways.OrderEnqueuePort;
+import com.ticketing.orders.model.gateways.OrdersPort;
+
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Clock;
 
 class UseCasesConfigTest {
 
     @Test
     void testUseCaseBeansExist() {
-        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(TestConfig.class)) {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(
+            TestConfig.class)) {
             String[] beanNames = context.getBeanDefinitionNames();
 
             boolean useCaseBeanFound = false;
@@ -31,18 +40,23 @@ class UseCasesConfigTest {
     static class TestConfig {
 
         @Bean
-        public com.ticketing.orders.model.gateways.OrdersPort ordersPort() {
-            return org.mockito.Mockito.mock(com.ticketing.orders.model.gateways.OrdersPort.class);
+        public OrdersPort ordersPort() {
+            return Mockito.mock(OrdersPort.class);
         }
 
         @Bean
-        public com.ticketing.orders.model.gateways.InventoryPort inventoryPort() {
-            return org.mockito.Mockito.mock(com.ticketing.orders.model.gateways.InventoryPort.class);
+        public InventoryPort inventoryPort() {
+            return Mockito.mock(InventoryPort.class);
         }
 
         @Bean
-        public java.time.Clock clock() {
-            return java.time.Clock.systemUTC();
+        public OrderEnqueuePort orderEnqueuePort() {
+            return Mockito.mock(OrderEnqueuePort.class);
+        }
+
+        @Bean
+        public Clock clock() {
+            return Clock.systemUTC();
         }
 
         @Bean

@@ -57,6 +57,13 @@ aws:
     endpoint: ${SQS_ENDPOINT:}
 inventory:
   table: ${DYNAMODB_TABLE_NAME:ticketing-inventory}
+  default-page-size: ${INVENTORY_DEFAULT_PAGE_SIZE:50}
+  execution:
+    transition-retries: ${INVENTORY_TRANSITION_RETRIES:2}
+    processing-concurrency: ${INVENTORY_PROCESSING_CONCURRENCY:8}
+  outbox:
+    publish-concurrency: ${INVENTORY_OUTBOX_PUBLISH_CONCURRENCY:8}
+    dispatch-timeout: ${INVENTORY_OUTBOX_DISPATCH_TIMEOUT:15s}
   commands-queue: ${INVENTORY_COMMANDS_QUEUE_URL:}
   expirations-queue: ${INVENTORY_EXPIRATIONS_QUEUE_URL:}
   order-events-queue: ${ORDER_EVENTS_QUEUE_URL:}

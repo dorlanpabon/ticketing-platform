@@ -298,8 +298,9 @@ def pmd_in_container(candidate: Path, trusted: Path, output: Path, service: str,
         raise QualityError("PMD must come from the verified standalone distribution")
     java_files = output / f"{service}-sources.txt"
     java_files.write_text("\n".join("/workspace/" + p.relative_to(candidate).as_posix() for p in sources), encoding="utf-8")
-    # Container uses POSIX separators even when the host is Windows.
-    aux = ":".join("/workspace/" + Path(p).relative_to(candidate).as_posix() for p in classpath)
+    auxiliary_file = output / f"{service}-auxclasspath.txt"
+    auxiliary_paths = ["/workspace/" + Path(p).relative_to(candidate).as_posix() for p in classpath]
+    auxiliary_file.write_text("\n".join(auxiliary_paths) + "\n", encoding="utf-8")
     base = [docker, "run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--pids-limit=256", "--memory=2g", "--cpus=2", "--user", str(os.getuid()) if hasattr(os, "getuid") else "1000:1000",
             "--mount", f"type=bind,source={candidate},target=/workspace,readonly",
@@ -310,7 +311,7 @@ def pmd_in_container(candidate: Path, trusted: Path, output: Path, service: str,
     if version not in actual:
         raise QualityError("Container PMD version does not match policy")
     execute([*base, "check", "--file-list", f"/reports/{service}-sources.txt", "--rulesets", "/policy/pmd.xml",
-             "--use-version", "java-25", "--aux-classpath", aux, "--format", "json", "--report-file",
+             "--use-version", "java-25", "--aux-classpath", f"file:/reports/{auxiliary_file.name}", "--format", "json", "--report-file",
              f"/reports/pmd-{service}.json", "--no-cache", "--no-progress"])
     if not (output / f"pmd-{service}.json").is_file():
         raise QualityError("PMD did not produce evidence")

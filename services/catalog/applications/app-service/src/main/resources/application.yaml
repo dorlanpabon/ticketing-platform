@@ -55,6 +55,15 @@ aws:
   region: ${AWS_REGION:us-east-1}
   dynamodb:
     endpoint: ${DYNAMODB_ENDPOINT:}
+catalog:
+  limits:
+    max-name-length: 120
+    max-venue-length: 200
+    min-capacity: 1
+    max-capacity: 100000
+    min-page-size: 1
+    max-page-size: 100
+    default-page-size: 50
 entrypoint:
   sqs:
     region: ${AWS_REGION:us-east-1}

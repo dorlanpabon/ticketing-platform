@@ -1,5 +1,7 @@
 package com.ticketing.catalog.api.config;
 
+import com.ticketing.catalog.api.HttpConstants;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,11 +20,11 @@ public class CorsConfig {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowCredentials(Boolean.TRUE);
         config.setAllowedOrigins(origins);
-        config.setAllowedMethods(Arrays.asList("POST", "GET")); // TODO: Check others required methods
+        config.setAllowedMethods(Arrays.asList(HttpConstants.POST_METHOD, HttpConstants.GET_METHOD)); // TODO: Check others required methods
         config.setAllowedHeaders(List.of(CorsConfiguration.ALL));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
+        source.registerCorsConfiguration(HttpConstants.ALL_PATHS, config);
 
         return new CorsWebFilter(source);
     }

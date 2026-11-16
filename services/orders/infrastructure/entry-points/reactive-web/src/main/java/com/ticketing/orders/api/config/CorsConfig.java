@@ -1,5 +1,7 @@
 package com.ticketing.orders.api.config;
 
+import com.ticketing.orders.api.utils.HttpConstants;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -22,7 +24,7 @@ public class CorsConfig {
         config.setAllowedHeaders(List.of(CorsConfiguration.ALL));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
+        source.registerCorsConfiguration(HttpConstants.ALL_PATHS, config);
 
         return new CorsWebFilter(source);
     }

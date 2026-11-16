@@ -3,7 +3,7 @@
   "info": {
     "title": "Ticketing API",
     "version": "1.0.0",
-    "description": "Implemented Catalog, Orders and Inventory HTTP contracts. Public operations authenticate a customer or admin. AWS API Gateway validates JWTs and overwrites trusted identity headers; local mode accepts only the documented synthetic bearer identities. Internal Inventory routes rely on private network access and are not API Gateway routes. 202 means durable acceptance, not a guaranteed reservation or completed sale. No payments, manual cancellation, refunds or transitions out of SOLD/COMPLIMENTARY are implemented. The 16 KiB body limit currently maps to 400 in Catalog/Orders and 413 in Inventory. See docs/contracts.md for source mapping, limitations and PDF traceability."
+    "description": "Implemented Catalog, Orders and Inventory HTTP contracts. Public operations authenticate a customer or admin. AWS API Gateway validates JWTs and overwrites trusted identity headers; local mode accepts only the documented synthetic bearer identities. Internal Inventory routes rely on private network access and are not API Gateway routes. Order creation returns 202 after durable persistence and confirmed SQS enqueue. Inventory allocates tickets asynchronously. No payments, manual cancellation, refunds or transitions out of SOLD/COMPLIMENTARY are implemented. The 16 KiB body limit currently maps to 400 in Catalog/Orders and 413 in Inventory. See docs/contracts.md for source mapping, limitations and PDF traceability."
   },
   "servers": [
     {
@@ -479,7 +479,7 @@
     "/api/v1/orders": {
       "post": {
         "operationId": "createOrder",
-        "summary": "Accept durable purchase work; reservation may still be RESERVING",
+        "summary": "Create a purchase after SQS confirms enqueue",
         "security": [
           {
             "bearerAuth": []
@@ -487,7 +487,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Accept durable purchase work; reservation may still be RESERVING",
+            "description": "Order persisted and purchase command accepted by SQS. Inventory allocates tickets asynchronously.",
             "content": {
               "application/json": {
                 "schema": {
@@ -535,7 +535,7 @@
             }
           },
           "503": {
-            "description": "Required dependency unavailable",
+            "description": "Required dependency unavailable. ORDER_ENQUEUE_UNAVAILABLE means Orders could not confirm SQS enqueue. Retry with the same Idempotency-Key and payload.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -570,7 +570,7 @@
         "tags": [
           "Orders"
         ],
-        "description": "Customer identity comes from authentication. One to ten distinct numbered entries from one event; ticketIds are canonicalized before HTTP idempotency comparison. Commits the order and purchase command before a short Inventory call. 202 may contain RESERVING/AVAILABLE, RESERVED, or a durable rejection; follow GET /orders/{orderId}. The original deadline never extends on replay."
+        "description": "Customer identity comes from authentication. Accepts one to ten distinct numbered entries from one event and canonicalizes ticketIds for idempotency. Orders commits the order and outbox atomically. Either the API or the relay can publish that command to SQS. Orders returns 202 only after confirmation of the current or an earlier send. The response reports the order, which may still be RESERVING. Follow GET /api/v1/orders/{orderId}. The same key and payload recover the original ID and deadline."
       },
       "servers": [
         {
@@ -784,7 +784,7 @@
     "/api/v1/admin/complimentary-orders": {
       "post": {
         "operationId": "createComplimentaryOrder",
-        "summary": "Accept audited complimentary allocation work",
+        "summary": "Create a complimentary order after SQS confirms enqueue",
         "security": [
           {
             "bearerAuth": []
@@ -792,7 +792,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Accept audited complimentary allocation work",
+            "description": "Order persisted and complimentary command accepted by SQS. Inventory allocates tickets asynchronously.",
             "content": {
               "application/json": {
                 "schema": {
@@ -850,7 +850,7 @@
             }
           },
           "503": {
-            "description": "Required dependency unavailable",
+            "description": "Required dependency unavailable. ORDER_ENQUEUE_UNAVAILABLE means Orders could not confirm SQS enqueue. Retry with the same Idempotency-Key and payload.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -882,7 +882,7 @@
             "description": "Owner and operation scoped. Reuse with a different payload returns 409."
           }
         ],
-        "description": "Requires exact admin group, beneficiaryId and a nonblank reason. Persists a complimentary request for the beneficiary. COMPLIMENTARY is final, consumes capacity, and does not count as a sale. 202 does not guarantee capacity. The beneficiary owns subsequent GET access; an admin has no blanket read bypass.",
+        "description": "Requires exact admin group, beneficiaryId and a nonblank reason. Orders commits the order and outbox atomically and returns 202 after confirming that SQS accepted the command. The same key and payload recover the original ID and deadline. Inventory processes the allocation asynchronously. COMPLIMENTARY is final and consumes capacity separately from sales. The beneficiary owns subsequent GET access.",
         "tags": [
           "Orders"
         ]

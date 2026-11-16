@@ -135,7 +135,7 @@ def seed_dataset(config, run_id):
 
 
 def runtime_inventory():
-    compose = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml')]
+    compose = ['docker', 'compose', '-f', str(ROOT / 'docker-compose.yml')]
     identifiers = command([*compose, 'ps', '--all', '--quiet']).splitlines()
     if not identifiers:
         raise RuntimeError('The application Compose project is not running')
@@ -394,7 +394,7 @@ def main():
               'startedAt': utc(), 'gitSha': command(['git', 'rev-parse', 'HEAD']),
               'gitDirty': bool(command(['git', 'status', '--porcelain'])),
               'scriptSha256': hashlib.sha256((SCRIPTS / 'load.js').read_bytes()).hexdigest(),
-              'composeSha256': hashlib.sha256((ROOT / 'compose.yaml').read_bytes()).hexdigest(),
+              'composeSha256': hashlib.sha256((ROOT / 'docker-compose.yml').read_bytes()).hexdigest(),
               'host': {'platform': platform.platform(), 'python': platform.python_version(), 'cpuCount': os.cpu_count()}}
     try:
         if args.action == 'validate':

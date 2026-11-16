@@ -8,7 +8,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPOSE = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml')]
+COMPOSE = ['docker', 'compose', '-f', str(ROOT / 'docker-compose.yml')]
 
 
 def run(arguments):

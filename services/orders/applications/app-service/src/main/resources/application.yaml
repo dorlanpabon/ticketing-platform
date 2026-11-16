@@ -67,7 +67,19 @@ entrypoint:
     visibilityTimeoutSeconds: 60
     numberOfThreads: 1
 adapter:
+  rest-consumer:
+    base-url: ${INVENTORY_BASE_URL:http://localhost:8082}
+    transport-timeout: ${INVENTORY_HTTP_TIMEOUT_MS:2000}ms
+    request-timeout: ${INVENTORY_REQUEST_TIMEOUT:2s}
+    min-pool-size: 500
+    max-idle-time: 15s
+    max-life-time: 30s
+    eviction-interval: 15s
+    dns-cache-ttl: 30s
   sqs:
     region: ${AWS_REGION:us-east-1}
     queueUrl: ${INVENTORY_COMMANDS_QUEUE_URL}
     endpoint: ${SQS_ENDPOINT:#{null}}
+    enqueue:
+      timeout: ${ORDER_ENQUEUE_TIMEOUT:8s}
+      retry-delay: ${ORDER_ENQUEUE_RETRY_DELAY:200ms}

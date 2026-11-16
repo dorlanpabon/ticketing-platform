@@ -1,19 +1,5 @@
 package com.ticketing.inventory.metrics.aws;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Tag;
-import io.micrometer.core.instrument.Timer;
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import software.amazon.awssdk.metrics.MetricCollection;
-import software.amazon.awssdk.metrics.MetricRecord;
-import software.amazon.awssdk.metrics.SdkMetric;
-import software.amazon.awssdk.metrics.internal.EmptyMetricCollection;
-
-import java.time.Duration;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -22,6 +8,25 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import software.amazon.awssdk.metrics.MetricCollection;
+import software.amazon.awssdk.metrics.MetricRecord;
+import software.amazon.awssdk.metrics.SdkMetric;
+import software.amazon.awssdk.metrics.internal.EmptyMetricCollection;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 class MicrometerMetricPublisherTest {
 
@@ -88,35 +93,35 @@ class MicrometerMetricPublisherTest {
 
     @Test
     void publishesNestedHttpAttemptsWithInheritedContextAndBoundedLabels() {
-        var registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        var registry = new SimpleMeterRegistry();
         try {
-            MetricCollection http = metricCollectionOf(
-                    metricRecord("HttpClientName", "NettyNio"),
-                    metricRecord("ConcurrencyAcquireDuration", Duration.ofMillis(75)),
-                    metricRecord("AwsRequestId", "request-specific-id"),
-                    metricRecord("Endpoint", "https://sensitive.example/resource"));
+            MetricCollection http = metricCollectionOf(metricRecord("HttpClientName", "NettyNio"),
+                metricRecord("ConcurrencyAcquireDuration", Duration.ofMillis(75)),
+                metricRecord("AwsRequestId", "request-specific-id"),
+                metricRecord("Endpoint", "https://sensitive.example/resource"));
             MetricCollection attempt = metricCollectionOf(
-                    metricRecord("ServiceCallDuration", Duration.ofMillis(150)),
-                    metricRecord("HttpStatusCode", 200));
+                metricRecord("ServiceCallDuration", Duration.ofMillis(150)),
+                metricRecord("HttpStatusCode", 200));
             when(attempt.children()).thenReturn(List.of(http));
             MetricCollection root = metricCollectionOf(metricRecord("ServiceId", "DynamoDB"),
-                    metricRecord("OperationName", "GetItem"), metricRecord("ApiCallSuccessful", true),
-                    metricRecord("ApiCallDuration", Duration.ofMillis(225)), metricRecord("RetryCount", 1));
+                metricRecord("OperationName", "GetItem"), metricRecord("ApiCallSuccessful", true),
+                metricRecord("ApiCallDuration", Duration.ofMillis(225)), metricRecord("RetryCount", 1));
             when(root.children()).thenReturn(List.of(attempt));
 
             new MicrometerMetricPublisher(registry).publish(root);
 
             var acquire = registry.get("ConcurrencyAcquireDuration").tags("ServiceId", "DynamoDB",
-                    "OperationName", "GetItem", "ApiCallSuccessful", "true", "HttpClientName", "NettyNio").timer();
-            org.junit.jupiter.api.Assertions.assertEquals(1, acquire.count());
-            org.junit.jupiter.api.Assertions.assertEquals(75, acquire.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS));
-            org.junit.jupiter.api.Assertions.assertEquals(1, registry.get("ServiceCallDuration")
-                    .tags("ServiceId", "DynamoDB", "OperationName", "GetItem").timer().count());
-            org.junit.jupiter.api.Assertions.assertEquals(1, registry.get("ApiCallDuration").timer().count());
-            org.junit.jupiter.api.Assertions.assertEquals(1, registry.get("RetryCount").counter().count());
-            org.junit.jupiter.api.Assertions.assertNull(registry.find("HttpStatusCode").counter());
+                "OperationName", "GetItem", "ApiCallSuccessful", "true", "HttpClientName", "NettyNio")
+                .timer();
+            Assertions.assertEquals(1, acquire.count());
+            Assertions.assertEquals(75, acquire.totalTime(TimeUnit.MILLISECONDS));
+            Assertions.assertEquals(1, registry.get("ServiceCallDuration")
+                .tags("ServiceId", "DynamoDB", "OperationName", "GetItem").timer().count());
+            Assertions.assertEquals(1, registry.get("ApiCallDuration").timer().count());
+            Assertions.assertEquals(1, registry.get("RetryCount").counter().count());
+            Assertions.assertNull(registry.find("HttpStatusCode").counter());
             assertTrue(registry.getMeters().stream().flatMap(meter -> meter.getId().getTags().stream())
-                    .noneMatch(tag -> List.of("AwsRequestId", "Endpoint").contains(tag.getKey())));
+                .noneMatch(tag -> List.of("AwsRequestId", "Endpoint").contains(tag.getKey())));
         } finally {
             registry.close();
         }
@@ -124,30 +129,30 @@ class MicrometerMetricPublisherTest {
 
     @Test
     void concurrencyValuesArePerAttemptSamplesNotAccumulatingCounters() {
-        var registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        var registry = new SimpleMeterRegistry();
         try {
             MetricCollection first = metricCollectionOf(metricRecord("HttpClientName", "NettyNio"),
-                    metricRecord("MaxConcurrency", 50), metricRecord("AvailableConcurrency", 40),
-                    metricRecord("LeasedConcurrency", 10), metricRecord("PendingConcurrencyAcquires", 7));
+                metricRecord("MaxConcurrency", 50), metricRecord("AvailableConcurrency", 40),
+                metricRecord("LeasedConcurrency", 10), metricRecord("PendingConcurrencyAcquires", 7));
             MetricCollection second = metricCollectionOf(metricRecord("HttpClientName", "NettyNio"),
-                    metricRecord("MaxConcurrency", 50), metricRecord("AvailableConcurrency", 45),
-                    metricRecord("LeasedConcurrency", 5), metricRecord("PendingConcurrencyAcquires", 2));
+                metricRecord("MaxConcurrency", 50), metricRecord("AvailableConcurrency", 45),
+                metricRecord("LeasedConcurrency", 5), metricRecord("PendingConcurrencyAcquires", 2));
             MetricCollection root = metricCollectionOf(metricRecord("ServiceId", "DynamoDB"),
-                    metricRecord("OperationName", "TransactWriteItems"));
+                metricRecord("OperationName", "TransactWriteItems"));
             when(root.children()).thenReturn(List.of(first, second));
 
             new MicrometerMetricPublisher(registry).publish(root);
 
             var pending = registry.get("PendingConcurrencyAcquires").tags("ServiceId", "DynamoDB",
-                    "OperationName", "TransactWriteItems", "HttpClientName", "NettyNio").summary();
-            org.junit.jupiter.api.Assertions.assertEquals(2, pending.count());
-            org.junit.jupiter.api.Assertions.assertEquals(9, pending.totalAmount());
-            org.junit.jupiter.api.Assertions.assertEquals(7, pending.max());
-            org.junit.jupiter.api.Assertions.assertEquals(2, registry.get("MaxConcurrency").summary().count());
-            org.junit.jupiter.api.Assertions.assertEquals(100, registry.get("MaxConcurrency").summary().totalAmount());
-            org.junit.jupiter.api.Assertions.assertEquals(15, registry.get("LeasedConcurrency").summary().totalAmount());
-            org.junit.jupiter.api.Assertions.assertEquals(85, registry.get("AvailableConcurrency").summary().totalAmount());
-            org.junit.jupiter.api.Assertions.assertNull(registry.find("PendingConcurrencyAcquires").counter());
+                "OperationName", "TransactWriteItems", "HttpClientName", "NettyNio").summary();
+            Assertions.assertEquals(2, pending.count());
+            Assertions.assertEquals(9, pending.totalAmount());
+            Assertions.assertEquals(7, pending.max());
+            Assertions.assertEquals(2, registry.get("MaxConcurrency").summary().count());
+            Assertions.assertEquals(100, registry.get("MaxConcurrency").summary().totalAmount());
+            Assertions.assertEquals(15, registry.get("LeasedConcurrency").summary().totalAmount());
+            Assertions.assertEquals(85, registry.get("AvailableConcurrency").summary().totalAmount());
+            Assertions.assertNull(registry.find("PendingConcurrencyAcquires").counter());
         } finally {
             registry.close();
         }

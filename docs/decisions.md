@@ -14,9 +14,9 @@ Decisiones vigentes al 2026-11-16. El [modelo de ejecución](architecture-runtim
 
 **Contexto.** Guardar una orden y enviar un mensaje son operaciones en sistemas diferentes. Una caída entre ambas puede perder trabajo o duplicarlo.
 
-**Decisión.** Guardar orden e intención outbox atómicamente antes de responder 202. El relay publica en SQS, y solo después marca el envío; el consumidor de Inventory realiza la reserva. IDs estables y condiciones hacen inocuo repetir el efecto. La aceptación conserva `expiresAt=requestedAt+600s`; la publicación y los reintentos mantienen ese deadline. Las latencias de aceptación y procesamiento deben medirse por escenario.
+**Decisión.** Guardar orden e intención outbox atómicamente. Durante una compra o cortesía, Orders reclama el comando persistido por ID y responde `202` después de que SQS acepta el envío o de comprobar una publicación previa. El API y el relay comparten el reclamo condicional. El relay recupera comandos pendientes si el primer intento falla. El consumidor de Inventory realiza la reserva y los IDs estables y las condiciones hacen inocua la repetición del efecto. `expiresAt=requestedAt+600s` se fija en la primera escritura.
 
-**Consecuencias.** 202 confirma recepción durable, no reserva ni venta. La interpretación del requisito de “encolado inmediato” incluye persistencia en outbox: no se garantiza presencia física inmediata en SQS. El backoff del relay puede retrasar su publicación. Se descarta responder éxito antes de persistir y se descarta una transacción distribuida DynamoDB/SQS inexistente. El consumidor reconoce un mensaje después del resultado durable.
+**Consecuencias.** En compra y cortesía, `202` confirma la orden persistida y el encolado. La disponibilidad se decide después en Inventory. Si Orders no puede confirmar el envío, responde `503 ORDER_ENQUEUE_UNAVAILABLE`. El cliente usa la misma clave y el mismo contenido para recuperar la orden y el plazo originales. La confirmación explícita conserva su `202` tras persistir el comando `ConfirmPurchase`. El consumidor reconoce un mensaje después del resultado durable.
 
 ## ADR-003 — Deadline inmutable y expiración por mensaje
 

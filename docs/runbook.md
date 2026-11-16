@@ -41,12 +41,17 @@ Identidades de prueba: `Authorization: Bearer local-customer-1`, `local-customer
 | `INVENTORY_EXPIRATIONS_QUEUE_URL` | ExpireReservation y SweepExpiredReservations; no mezclar con compras. |
 | `ORDER_EVENTS_QUEUE_URL`, `CATALOG_EVENTS_QUEUE_URL` | Proyecciones y activación de eventos. |
 | `INVENTORY_BASE_URL`, `CATALOG_BASE_URL` | Direcciones internas entre servicios; no URLs del frontend ni rutas AWS públicas. |
+| `INVENTORY_HTTP_TIMEOUT_MS`, `INVENTORY_REQUEST_TIMEOUT` | Orders usa el primero para conexión y E/S (2000 ms) y el segundo para la operación HTTP completa (2s). |
+| `ORDER_ENQUEUE_TIMEOUT`, `ORDER_ENQUEUE_RETRY_DELAY` | Presupuesto para confirmar el envío (8 s) e intervalo entre comprobaciones cuando otro publicador tiene el lease (200 ms). |
+| `INVENTORY_DEFAULT_PAGE_SIZE` | Tamaño de página de tickets que Inventory usa cuando el cliente omite `limit` (50). |
+| `INVENTORY_TRANSITION_RETRIES`, `INVENTORY_PROCESSING_CONCURRENCY` | Reintentos ante transiciones concurrentes (2) y operaciones simultáneas al liberar reservas (8). |
+| `INVENTORY_OUTBOX_PUBLISH_CONCURRENCY`, `INVENTORY_OUTBOX_DISPATCH_TIMEOUT` | Publicaciones simultáneas (8) y presupuesto por lote (15 s), limitado por el tiempo restante del lease del coordinador. |
 | `LOCAL_RECOVERY_ENABLED` | False en Compose y AWS. Compose ya tiene el emisor periódico único; no habilitar otro barrido por réplica. |
 | `TRACING_ENABLED` | False por defecto; true en overlay observability. |
 | `TRACING_SAMPLE_PROBABILITY` | 0.1 por defecto; 1.0 local para diagnosticar, no garantía de correlación completa. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Destino OTLP HTTP de trazas; por defecto collector interno, puerto 4318. |
 
-La referencia exacta es [Compose](../compose.yaml) y `applications/app-service/src/main/resources/application.yaml` de cada servicio. No versionar `.env`, contraseñas, tokens Sonar ni credenciales AWS. La configuración cloud pertenece a [ticketing-infra](../../ticketing-infra/README.md), no a un segundo Terraform dentro de este repositorio.
+La referencia exacta es [Compose](../docker-compose.yml) y `applications/app-service/src/main/resources/application.yaml` de cada servicio. No versionar `.env`, contraseñas, tokens Sonar ni credenciales AWS. La configuración cloud pertenece a [ticketing-infra](../../ticketing-infra/README.md), no a un segundo Terraform dentro de este repositorio.
 
 ## Comprobaciones y evidencia
 
@@ -99,6 +104,7 @@ La ejecución local del 2026-11-16, 10:07:09–10:07:36 UTC, terminó `passed`: 
 |---|---|---|
 | Evento permanece PROVISIONING | Catalog outbox, cola commands, Inventory worker, chunks de provisión e InventoryReady. | Restaurar consumers; reentrega idempotente continúa chunks. No marcar ACTIVE manualmente. |
 | Orden RESERVING / 202 sin reserva visible | Salud Inventory, outbox Orders y comandos pendientes. | Esperar/reconciliar con IDs originales. Una API caída no implica que su transacción no se haya confirmado. |
+| 503 ORDER_ENQUEUE_UNAVAILABLE | Orders carece de confirmación del envío dentro del presupuesto. | Reintentar el mismo cuerpo con la misma clave de idempotencia para recuperar la orden y el mensaje persistidos. |
 | 503 al consultar orden | Inventory inaccesible/timeout. | Recuperar autoridad; no presentar proyección vieja como confirmación definitiva. |
 | 503 INVENTORY_STALE | Vencimientos no materializados hace más de cinco segundos. | Revisar cola expirations, worker y recovery; preservar fail-closed. |
 | 409 de inventario/idempotencia | Entrada ocupada, versión en carrera o misma clave con payload diferente. | No tratarlo como fallo técnico indiscriminado. Reutilizar clave solo para la misma intención. |
@@ -134,7 +140,7 @@ La DLQ de Scheduler diagnostica fallos de entrega a SQS, no fallos de negocio de
 
 ```powershell
 python scripts/local/setup_observability.py
-docker compose -f compose.yaml -f compose.observability.yaml --profile observability up -d --wait
+docker compose -f docker-compose.yml -f compose.observability.yaml --profile observability up -d --wait
 ```
 
 Grafana: `http://localhost:13000`; Prometheus: `http://localhost:19090`; Tempo: `http://localhost:13200`; health del collector: `http://localhost:13133`. El setup genera contraseña local en `.env` ignorado; no imprimirla ni añadirla a evidencia. El overlay activa exportación de trazas y sampling 1.0. Mantener siempre ambos `-f` al operar este perfil. Salud HTTP 200 no demuestra ingestión: comprobar targets, métricas con muestras y una traza real. [Observabilidad](observability.md) registra el probe local real y su alcance `dirty=true`; no acredita el candidato final ni AWS. Trazas HTTP no prueban por sí solas propagación del contexto a través de SQS.

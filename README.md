@@ -8,9 +8,13 @@ The local runtime, contracts and quality tooling are implemented. `docs/evidence
 
 ## Business contract
 
-`202 Accepted` confirms durable work, not a guaranteed reservation. A purchase contains 1–10 distinct numbered tickets from one event. Reservation deadlines are immutable, at most 600 seconds after initial acceptance. Only Inventory assigns tickets. Only SOLD tickets count as sales; COMPLIMENTARY is separate.
+For order creation, `202 Accepted` confirms the durable order and successful enqueue in SQS. Inventory assigns tickets asynchronously. Orders stores the order and outbox command in one DynamoDB transaction and uses the same outbox entry for publication by the API or relay. If Orders cannot confirm enqueue, it returns `503 ORDER_ENQUEUE_UNAVAILABLE`. Retry the same request with the same `Idempotency-Key` to recover the original order and deadline.
+
+A purchase contains 1–10 distinct numbered tickets from one event. The reservation deadline is fixed when Orders stores the order, at most 600 seconds after creation. Only SOLD tickets count as sales. COMPLIMENTARY is separate.
 
 An order with AVAILABLE status has no active allocation; this does not assert that its historical requested tickets are currently free. `workflowStatus`, `resolution`, requested and active ticket IDs disambiguate the response.
+
+Catalog reads event validation and pagination settings from `catalog.limits`. They may be tightened by environment within the published API bounds. The configured default page size must stay within the configured page range. [Catalog application.yaml](services/catalog/applications/app-service/src/main/resources/application.yaml)
 
 ## Delivery flow
 
@@ -34,6 +38,8 @@ Requires Docker Compose. Run `docker compose up --build --wait` from this reposi
 
 Each context runs as two independent processes using the same image: an HTTP API and an asynchronous worker. APIs set `APP_ROLE=api`, `API_ENABLED=true`, `WORKERS_ENABLED=false`; workers invert those flags and have no published host ports. Worker HTTP business routes return 404 while readiness and Prometheus remain available. Runtime flags complement network/IAM isolation; they do not replace it.
 
+Run `python scripts/acceptance/verify.py --allow-dirty --checks queueOutage` against this local stack to verify recovery with the same idempotency key. The check temporarily stops ElasticMQ and the Orders and Inventory workers, then restores them.
+
 Scale consumers independently with `docker compose up -d --wait --scale inventory-worker=2` (also supported for `catalog-worker` and `orders-worker`). Conditional DynamoDB writes, inbox deduplication and outbox leases coordinate replicas. Run `python scripts/local/verify_roles.py --min-inventory-workers 2` to record actual runtime identities and probe evidence. This verifies role isolation and replica readiness; the concurrency/recovery acceptance suite separately verifies business correctness.
 
 The default six JVMs are capped at 512 MiB each with a 70% maximum heap; DynamoDB and ElasticMQ add 768 MiB. Sonar is optional and needs up to 3 GiB plus PostgreSQL. On an 8 GiB Docker VM, stop the quality profile before scaling workers or running parallel image builds. The infrastructure repository scales the six ECS services independently and reuses three approved image digests.
@@ -56,4 +62,76 @@ For local Sonar, run `python scripts/local/setup_quality.py` once, then `docker 
 
 Public and asynchronous specifications are in `contracts/openapi.json` and `contracts/asyncapi.json`. Internal Inventory endpoints are not exposed through the AWS public gateway.
 
-Generated example classes are retained and adapted: `DynamoDBTemplateAdapter`, `ModelEntity`, `TemplateAdapterOperations`, `SQSSender`, `SQSProcessor`, `SQSListener`, `RestConsumer`, its configuration and request/response models. The scaffold regenerates its architecture test/helper with machine-specific paths; those generated test files remain local and are regenerated during builds.
+The scaffold adapters and their tests are retained and named for their responsibilities: event, order and inventory repositories; event listeners and command publishers; and the Orders HTTP adapter for Inventory. The scaffold regenerates its architecture test/helper with machine-specific paths; those generated test files remain local and are regenerated during builds.
+
+Java source uses explicit imports and four spaces for nesting and line continuations. Leave blank lines between methods and related declarations. Keep fixed protocol fields in constants classes within their own module and configurable values in YAML. Log variable data as key–value fields.
+
+## API examples
+
+Run these PowerShell blocks in order after the services are healthy. The example creates a fresh event and uses the local admin and customer identities. Each write has its own idempotency key.
+
+```powershell
+$catalog = 'http://localhost:18080/api/v1/events'
+$ordersApi = 'http://localhost:18081/api/v1'
+$orders = "$ordersApi/orders"
+$inventory = 'http://localhost:18082/api/v1/events'
+$admin = @{ Authorization = 'Bearer local-admin' }
+$customer = @{ Authorization = 'Bearer local-customer-1' }
+$runId = [guid]::NewGuid().ToString()
+
+function Wait-ForStatus($uri, $headers, $property, $expected) {
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+    do {
+        $result = Invoke-RestMethod -Uri $uri -Headers $headers
+        if ($result.$property -eq $expected) { return $result }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "Expected $property to be $expected. Last value was $($result.$property)."
+}
+```
+
+Create an event as the admin. The response contains its ID, and Catalog lists it after Inventory provisions its numbered tickets.
+
+```powershell
+$eventBody = @{
+    name = 'Ticketing demo'
+    venue = 'Local arena'
+    startsAt = [DateTimeOffset]::UtcNow.AddDays(7).ToString('o')
+    capacity = 20
+} | ConvertTo-Json
+$event = Invoke-RestMethod -Method Post -Uri $catalog -ContentType 'application/json' -Body $eventBody -Headers ($admin + @{ 'Idempotency-Key' = "$runId-event" })
+$eventId = $event.eventId
+Wait-ForStatus "$catalog/$eventId" $customer 'status' 'ACTIVE'
+Invoke-RestMethod -Uri "${catalog}?limit=5" -Headers $customer
+```
+
+Request tickets 1 and 2 as a customer. The `202` response includes the order ID after SQS accepts the command. Poll the order until it is ready to confirm, then confirm before `expiresAt`.
+
+```powershell
+$orderBody = @{
+    eventId = $eventId
+    ticketIds = @('1', '2')
+} | ConvertTo-Json
+$purchaseHeaders = $customer + @{ 'Idempotency-Key' = "$runId-purchase" }
+$order = Invoke-RestMethod -Method Post -Uri $orders -ContentType 'application/json' -Body $orderBody -Headers $purchaseHeaders
+$orderUri = "$orders/$($order.orderId)"
+Wait-ForStatus $orderUri $customer 'workflowStatus' 'AWAITING_CONFIRMATION'
+Invoke-RestMethod -Method Post -Uri "$orderUri/confirm" -Headers ($customer + @{ 'Idempotency-Key' = "$runId-confirm" })
+Wait-ForStatus $orderUri $customer 'status' 'SOLD'
+```
+
+Assign ticket 3 as a complimentary ticket, then check availability. The response should show 17 available, 2 sold and 1 complimentary.
+
+```powershell
+$courtesyBody = @{
+    eventId = $eventId
+    ticketIds = @('3')
+    beneficiaryId = 'local-customer-1'
+    reason = 'Guest speaker'
+} | ConvertTo-Json
+$courtesy = Invoke-RestMethod -Method Post -Uri "$ordersApi/admin/complimentary-orders" -ContentType 'application/json' -Body $courtesyBody -Headers ($admin + @{ 'Idempotency-Key' = "$runId-courtesy" })
+Wait-ForStatus "$orders/$($courtesy.orderId)" $customer 'status' 'COMPLIMENTARY'
+Invoke-RestMethod -Uri "$inventory/$eventId/availability" -Headers $customer
+```
+
+For an automated walkthrough, use the [Postman collection](contracts/ticketing.postman_collection.json) and its [local runner instructions](scripts/postman/README.md).

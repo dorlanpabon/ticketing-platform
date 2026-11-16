@@ -40,7 +40,7 @@ La expiración real, las trazas y los paneles tienen ahora evidencia local acota
 |---|---|---|---|---|
 | F01 | PDF p.3 RF1 | Crear/consultar eventos e inventario. | Local verified | [Catalog use case][catalog-tests], [HTTP][catalog-http], [provisión y recuperación][roles-report]. PROVISIONING impide anunciar inventario incompleto. |
 | F02 | PDF p.3 RF2 | Reserva de máximo diez minutos y devolución si no se confirma. | Local verified | [Fronteras de reloj][inventory-tests], [DynamoDB][inventory-db] y [timer SQS tras diez minutos reales][expiry-report]; liberación íntegra, sin extensión del deadline ni liberación de SOLD. |
-| F03 | PDF p.3 RF3 | Encolar solicitud, retornar ID y procesar compra asíncrona. | Local verified | [Orders][orders-tests], [SQS][inventory-sqs], [aceptación][http-integration]. El 202 garantiza orden + outbox persistidos; no garantiza presencia física inmediata en SQS. |
+| F03 | PDF p.3 RF3 | Encolar solicitud, retornar ID y procesar compra asíncrona. | Local verified | [Orders][orders-tests] conserva orden y outbox en una transacción. El `202` de compra espera la confirmación de SQS. En Compose, `queueOutage` comprobó el `503`, el conflicto de idempotencia, el reintento con el mismo ID y plazo y el mensaje original en la cola. |
 | F04 | PDF p.3 RF4 | Consultar orden por ID y estado de entradas. | Local verified | [Orders HTTP][orders-http] y [use case][orders-tests]. Se distinguen `status` de inventario y `workflowStatus` técnico; Inventory es autoridad. |
 | F05 | PDF p.4 RF5 | Carreras y ausencia de sobreventa. | Local verified | [100 compradores][race-report], [transacciones reales][inventory-db]. Pendiente carga sostenida y AWS. |
 | F06 | PDF p.4 RF6 | Liberación automática mediante proceso periódico. | Local verified / Pending AWS | [Recovery paginado y lease][inventory-db], [emisor local cada minuto][recovery-tick]. Timer SQS por reserva es el mecanismo principal; Sweep periódico es recuperación. Scheduler AWS no desplegado. |
@@ -61,7 +61,7 @@ La expiración real, las trazas y los paneles tienen ahora evidencia local acota
 | T08 | PDF p.5 | API con Mono/Flux. | Local verified | [Pruebas WebFlux][orders-http], [Inventory HTTP][inventory-http]. |
 | T09 | PDF p.5 | Errores y retries reactivos apropiados. | Local verified | [Use cases][inventory-tests], [listener][inventory-listener], [DynamoDB][inventory-db]. Retries acotados, sin extender deadline; no reintentar errores de negocio como disponibilidad técnica. |
 | T10 | PDF p.5 | Versiones/conditional writes en inventario. | Local verified | [Adaptador][inventory-adapter], [carreras reales][inventory-db]. |
-| T11 | PDF pp.5–6 | Compose con aplicación y dependencias. | Local verified | [compose.yaml][compose] es el nombre convencional equivalente a `docker-compose.yml`; [runbook][runbook]. |
+| T11 | PDF pp.5–6 | Compose con aplicación y dependencias. | Local verified | [docker-compose.yml][compose]; [runbook][runbook]. |
 | E01 | PDF p.5 | Fuente con estructura Clean Architecture. | Implemented | [Scaffold oficial configurado][catalog-settings], [arquitectura][architecture]. |
 | E02 | PDF p.5 | Identificadores y comentarios de código en inglés. | Implemented | [Dominio][inventory-usecase], [adaptadores][inventory-adapter]. Documentación en español; revisión lingüística humana no automatizada. |
 | E03 | PDF p.5 | SOLID y patrones apropiados. | Implemented | [Puertos/casos de uso][inventory-usecase], [decisiones][architecture]. Juicio de diseño sustentable, no puntuación automática. |
@@ -123,7 +123,7 @@ La expiración real, las trazas y los paneles tienen ahora evidencia local acota
 [architecture]: ../architecture-runtime.md
 [performance]: ../performance.md
 [contracts]: ../contracts.md
-[compose]: ../../compose.yaml
+[compose]: ../../docker-compose.yml
 [observability]: ../../compose.observability.yaml
 [dockerfile]: ../../Dockerfile
 [asyncapi]: ../../contracts/asyncapi.json
@@ -144,28 +144,28 @@ La expiración real, las trazas y los paneles tienen ahora evidencia local acota
 [postman-runner]: ../../scripts/postman/README.md
 [roles-report]: ../../build/quality/runtime-roles.json
 [catalog-tests]: ../../services/catalog/domain/usecase/src/test/java/com/ticketing/catalog/usecase/CatalogUseCaseTest.java
-[catalog-http]: ../../services/catalog/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/catalog/api/RouterRestTest.java
+[catalog-http]: ../../services/catalog/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/catalog/api/RoutesTest.java
 [catalog-settings]: ../../services/catalog/settings.gradle
 [catalog-build]: ../../services/catalog/applications/app-service/build.gradle
 [catalog-coverage]: ../../services/catalog/build/reports/jacoco/merged/jacoco.xml
 [catalog-pit-model]: ../../services/catalog/domain/model/build/reports/pitest/mutations.xml
 [catalog-pit-usecase]: ../../services/catalog/domain/usecase/build/reports/pitest/mutations.xml
 [orders-tests]: ../../services/orders/domain/usecase/src/test/java/com/ticketing/orders/usecase/OrdersUseCaseTest.java
-[orders-http]: ../../services/orders/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/orders/api/RouterRestTest.java
-[orders-db]: ../../services/orders/infrastructure/driven-adapters/dynamo-db/src/test/java/com/ticketing/orders/dynamodb/OrdersDynamoIntegrationTest.java
-[orders-db-report]: ../../services/orders/infrastructure/driven-adapters/dynamo-db/build/test-results/integrationTest/TEST-com.ticketing.orders.dynamodb.OrdersDynamoIntegrationTest.xml
+[orders-http]: ../../services/orders/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/orders/api/RoutesTest.java
+[orders-db]: ../../services/orders/infrastructure/driven-adapters/dynamo-db/src/test/java/com/ticketing/orders/dynamodb/PersistenceIntegrationTest.java
+[orders-db-report]: ../../services/orders/infrastructure/driven-adapters/dynamo-db/build/test-results/integrationTest/TEST-com.ticketing.orders.dynamodb.PersistenceIntegrationTest.xml
 [orders-coverage]: ../../services/orders/build/reports/jacoco/merged/jacoco.xml
 [orders-pit-model]: ../../services/orders/domain/model/build/reports/pitest/mutations.xml
 [orders-pit-usecase]: ../../services/orders/domain/usecase/build/reports/pitest/mutations.xml
 [inventory-tests]: ../../services/inventory/domain/usecase/src/test/java/com/ticketing/inventory/usecase/InventoryUseCaseTest.java
 [inventory-usecase]: ../../services/inventory/domain/usecase/src/main/java/com/ticketing/inventory/usecase/InventoryUseCase.java
-[inventory-db]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/src/test/java/com/ticketing/inventory/dynamodb/DynamoInventoryIntegrationTest.java
-[inventory-db-report]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/build/test-results/integrationTest/TEST-com.ticketing.inventory.dynamodb.DynamoInventoryIntegrationTest.xml
-[inventory-adapter]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/src/main/java/com/ticketing/inventory/dynamodb/DynamoDBTemplateAdapter.java
-[inventory-http]: ../../services/inventory/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/inventory/api/InventoryApiTest.java
-[inventory-sqs]: ../../services/inventory/infrastructure/entry-points/sqs-listener/src/test/java/com/ticketing/inventory/sqs/listener/SQSProcessorTest.java
-[inventory-listener]: ../../services/inventory/infrastructure/entry-points/sqs-listener/src/test/java/com/ticketing/inventory/sqs/listener/helper/SQSListenerTest.java
-[inventory-sender]: ../../services/inventory/infrastructure/driven-adapters/sqs-sender/src/test/java/com/ticketing/inventory/sqs/sender/SQSSenderTest.java
+[inventory-db]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/src/test/java/com/ticketing/inventory/dynamodb/InventoryRepositoryIntegrationTest.java
+[inventory-db-report]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/build/test-results/integrationTest/TEST-com.ticketing.inventory.dynamodb.InventoryRepositoryIntegrationTest.xml
+[inventory-adapter]: ../../services/inventory/infrastructure/driven-adapters/dynamo-db/src/main/java/com/ticketing/inventory/dynamodb/InventoryRepository.java
+[inventory-http]: ../../services/inventory/infrastructure/entry-points/reactive-web/src/test/java/com/ticketing/inventory/api/HttpApiTest.java
+[inventory-sqs]: ../../services/inventory/infrastructure/entry-points/sqs-listener/src/test/java/com/ticketing/inventory/sqs/listener/SqsCommandProcessorTest.java
+[inventory-listener]: ../../services/inventory/infrastructure/entry-points/sqs-listener/src/test/java/com/ticketing/inventory/sqs/listener/helper/SqsWorkerTest.java
+[inventory-sender]: ../../services/inventory/infrastructure/driven-adapters/sqs-sender/src/test/java/com/ticketing/inventory/sqs/sender/SqsMessagePublisherTest.java
 [inventory-coverage]: ../../services/inventory/build/reports/jacoco/merged/jacoco.xml
 [inventory-pit-model]: ../../services/inventory/domain/model/build/reports/pitest/mutations.xml
 [inventory-pit-usecase]: ../../services/inventory/domain/usecase/build/reports/pitest/mutations.xml

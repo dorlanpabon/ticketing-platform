@@ -11,6 +11,11 @@ public final class InventoryException extends RuntimeException {
         this.responseStatus = status;
     }
 
-    public String code() { return errorCode; }
-    public int status() { return responseStatus; }
+    public String code() {
+        return errorCode;
+    }
+
+    public int status() {
+        return responseStatus;
+    }
 }

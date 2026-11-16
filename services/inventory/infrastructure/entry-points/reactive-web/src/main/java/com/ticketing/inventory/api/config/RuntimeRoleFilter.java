@@ -1,5 +1,6 @@
 package com.ticketing.inventory.api.config;
 
+import com.ticketing.inventory.api.utils.HttpConstants;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
@@ -7,6 +8,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
+
 import reactor.core.publisher.Mono;
 
 /** Keeps consumer replicas off the business HTTP surface while retaining probes. */
@@ -30,7 +32,7 @@ public final class RuntimeRoleFilter implements WebFilter {
     }
 
     private boolean managementPath(String path) {
-        return path.equals("/actuator/health") || path.startsWith("/actuator/health/")
-                || path.equals("/actuator/prometheus");
+        return path.equals(HttpConstants.HEALTH_PATH) || path.startsWith(HttpConstants.HEALTH_PATH_PREFIX)
+            || path.equals(HttpConstants.PROMETHEUS_PATH);
     }
 }

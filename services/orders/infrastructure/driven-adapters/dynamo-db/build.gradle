@@ -1,4 +1,5 @@
 dependencies {
+    implementation 'org.slf4j:slf4j-api'
     implementation 'software.amazon.awssdk:dynamodb-enhanced'
     implementation 'org.reactivecommons.utils:object-mapper-api:0.1.0'
     testImplementation 'org.reactivecommons.utils:object-mapper:0.1.0'
