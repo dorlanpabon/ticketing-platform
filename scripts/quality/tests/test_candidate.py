@@ -17,9 +17,26 @@ class AcceptanceEvidenceTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.report = self.root / 'acceptance.json'
         self.value = {'commit': 'a' * 40, 'tree': 'b' * 40, 'dirty': False, 'checks': {}}
-        for check in ('integration', 'architecture', 'concurrency', 'recovery', 'containerSmoke', 'expiry'):
-            (self.root / (check + '.json')).write_text('{"status":"passed"}', encoding='utf-8')
+        self.children = {
+            'integration': {'eventId': 'event', 'orderId': 'order', 'assertions': ['durable202', 'idempotency', 'deadline', 'owner', 'confirmation', 'courtesy', 'all-or-none', 'counters']},
+            'architecture': {'services': {service: {'tests': 3, 'report': service + '.xml', 'sha256': 'c' * 64}
+                                          for service in ('catalog', 'orders', 'inventory')},
+                             'rules': ['domain-dependencies', 'bounded-context-isolation', 'nonblocking-reactive-code']},
+            'concurrency': {'eventId': 'event', 'buyers': 100, 'winners': 1, 'rejected': 99},
+            'recovery': {'eventId': 'event', 'orderId': 'order', 'scenario': 'Inventory unavailable then restored',
+                         'consumerReplicas': 2, 'deadlinePreserved': True},
+            'containerSmoke': {'services': ['catalog', 'orders', 'inventory'], 'readiness': 'UP'},
+            'expiry': {'eventId': 'event', 'orderId': 'order', 'expiresAt': '2026-11-16T00:10:00Z',
+                       'timerProcessingLagSeconds': 0.52, 'periodicRecoveryStopped': True, 'httpLazyExpiryDisabled': True,
+                       'durableExpiredState': 'RESERVATION_EXPIRED', 'soldTicketPreserved': True},
+        }
+        for check, child in self.children.items():
+            child['status'] = 'passed'
+            self.write_child(check, child)
             self.value['checks'][check] = {'status': 'passed', 'evidence': check + '.json'}
+
+    def write_child(self, name, value):
+        (self.root / (name + '.json')).write_text(json.dumps(value), encoding='utf-8')
 
     def verify(self):
         self.report.write_text(json.dumps(self.value), encoding='utf-8')
@@ -40,6 +57,52 @@ class AcceptanceEvidenceTest(unittest.TestCase):
         self.value['tree'] = 'c' * 40
         with self.assertRaises(QualityError):
             self.verify()
+
+    def test_parent_pass_cannot_override_failed_or_malformed_children(self):
+        for name, original in self.children.items():
+            for child in (None, [], 'passed', {}, {'status': 'passed'}, {**original, 'status': 'failed'},
+                          {**original, 'status': True}, {**original, 'error': 'failed assertion'}):
+                with self.subTest(name=name, child=child):
+                    self.write_child(name, child)
+                    with self.assertRaises(QualityError):
+                        self.verify()
+            (self.root / (name + '.json')).write_text('{invalid', encoding='utf-8')
+            with self.assertRaises(QualityError):
+                self.verify()
+            self.write_child(name, original)
+
+    def test_missing_child_fields_and_false_assertions_fail_closed(self):
+        for name, original in self.children.items():
+            for key in original:
+                with self.subTest(name=name, missing=key):
+                    self.write_child(name, {field: value for field, value in original.items() if field != key})
+                    with self.assertRaises(QualityError):
+                        self.verify()
+            self.write_child(name, original)
+        cases = [('concurrency', 'winners', True), ('concurrency', 'winners', 2), ('recovery', 'consumerReplicas', 1),
+                 ('expiry', 'timerProcessingLagSeconds', float('nan')), ('expiry', 'timerProcessingLagSeconds', -1),
+                 ('expiry', 'soldTicketPreserved', False), ('integration', 'assertions', ['counters']),
+                 ('architecture', 'services', {'catalog': None}), ('containerSmoke', 'services', ['catalog'])]
+        for name, field, value in cases:
+            with self.subTest(name=name, field=field, value=value):
+                self.write_child(name, {**self.children[name], field: value})
+                with self.assertRaises(QualityError):
+                    self.verify()
+            self.write_child(name, self.children[name])
+
+    def test_invalid_parent_shape_and_evidence_paths_fail_closed(self):
+        original = self.value['checks']
+        for checks in (None, [], 'passed', {'integration': None}, {'integration': {'status': 'passed', 'evidence': []}},
+                       {'integration': {'status': 'passed', 'evidence': '../outside.json'}}):
+            with self.subTest(checks=checks):
+                self.value['checks'] = checks
+                with self.assertRaises(QualityError):
+                    self.verify()
+        self.value['checks'] = original
+        for raw in ('null', '[]', '{invalid'):
+            self.report.write_text(raw, encoding='utf-8')
+            with self.assertRaises(QualityError):
+                acceptance_evidence(self.report, self.root, 'a' * 40, 'b' * 40)
 
     def test_missing_and_failed_checks_are_rejected(self):
         self.value['checks']['concurrency']['status'] = 'failed'

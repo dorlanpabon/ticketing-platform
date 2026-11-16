@@ -1,7 +1,9 @@
 """Guard regressions: these tests send no HTTP requests and start no containers."""
+import json
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import run
 
 
@@ -35,10 +37,29 @@ class PerformanceGuardsTest(unittest.TestCase):
             self.config('--scenario', 'cohort')
         config = self.config('--scenario', 'cohort', env={'PERF_STRESS': '1'})
         self.assertEqual(100, config.vus)
+        self.assertEqual(1, config.cohort_tickets)
         config = self.config('--scenario', 'cohort', '--vus', '1000', env={'PERF_STRESS': '1'})
         self.assertEqual(1000, config.vus)
         with self.assertRaises(ValueError):
             self.config('--scenario', 'cohort', '--vus', '99', env={'PERF_STRESS': '1'})
+
+    def test_cohort_ticket_count_is_explicit_and_bounded(self):
+        config = self.config('--scenario', 'cohort', '--vus', '1000', '--cohort-tickets', '100', env={'PERF_STRESS': '1'})
+        self.assertEqual(100, config.cohort_tickets)
+        for tickets in ('0', '-1', '1001'):
+            with self.subTest(tickets=tickets), self.assertRaises(ValueError):
+                self.config('--scenario', 'cohort', '--cohort-tickets', tickets, env={'PERF_STRESS': '1'})
+        with self.assertRaises(ValueError):
+            self.config('--cohort-tickets', '2')
+
+    def test_cohort_seeds_exact_capacity_without_unrelated_events(self):
+        config = self.config('--scenario', 'cohort', '--vus', '1000', '--cohort-tickets', '100', env={'PERF_STRESS': '1'})
+        with patch('run.http', return_value=(200, {'status': 'UP'})), \
+                patch('run.create_event', return_value={'eventId': 'event', 'capacity': 100}) as create:
+            dataset = run.seed_dataset(config, 'run')
+        create.assert_called_once_with('run', 'hot', 100)
+        self.assertEqual([], dataset['events'])
+        self.assertEqual(100, dataset['hotEvent']['capacity'])
 
     def test_capacity_accounting_rejects_negative_or_missing_counters(self):
         valid = {'capacity': 3, 'available': 1, 'reserved': 1, 'pendingConfirmation': 0, 'sold': 1, 'complimentary': 0}
@@ -69,6 +90,125 @@ class PerformanceGuardsTest(unittest.TestCase):
             path = Path(temporary) / 'attempts.jsonl'
             path.write_text('diagnostic\n{"kind":"other"}\n{"kind":"cohort_attempt","vu":1,"status":202}\n', encoding='utf-8')
             self.assertEqual([{'kind': 'cohort_attempt', 'vu': 1, 'status': 202}], run.parse_attempts(path))
+
+
+class CohortAuditTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+
+    def prepare(self, vus=1000, tickets=100):
+        self.config = run.configuration(run.parser().parse_args(
+            ['--scenario', 'cohort', '--vus', str(vus), '--cohort-tickets', str(tickets)]), {'PERF_STRESS': '1'})
+        self.dataset = {'events': [], 'hotEvent': {'eventId': 'event', 'capacity': tickets}}
+        self.snapshot = {'capacity': tickets, 'available': 0, 'reserved': tickets, 'pendingConfirmation': 0, 'sold': 0, 'complimentary': 0}
+        self.attempts = []
+        self.orders = {}
+        self.tickets = [{'eventId': 'event', 'ticketId': str(seat), 'status': 'RESERVED'} for seat in range(1, tickets + 1)]
+        self.calls = []
+        for vu in range(1, vus + 1):
+            seat = str((vu - 1) % tickets + 1)
+            order_id = 'order-' + str(vu)
+            self.attempts.append({'kind': 'cohort_attempt', 'vu': vu, 'ticketId': seat, 'status': 202, 'orderId': order_id, 'sentAt': vu})
+            self.orders[order_id] = {'orderId': order_id, 'eventId': 'event', 'requestedTicketIds': [seat],
+                                     'activeTicketIds': [seat] if vu <= tickets else [],
+                                     'status': 'RESERVED' if vu <= tickets else 'AVAILABLE',
+                                     'workflowStatus': 'AWAITING_CONFIRMATION' if vu <= tickets else 'REJECTED'}
+
+    def http(self, service, path, **kwargs):
+        self.calls.append((service, path, kwargs))
+        if service == 'orders':
+            return 200, self.orders[path.rsplit('/', 1)[1]]
+        if path.endswith('/availability'):
+            return 200, self.snapshot
+        return 200, {'items': self.tickets, 'nextCursor': None}
+
+    def audit(self, callback=None):
+        (self.directory / 'cohort-attempts.jsonl').write_text(
+            '\n'.join(json.dumps(item) for item in self.attempts), encoding='utf-8')
+        with patch('run.http', side_effect=callback or self.http):
+            return run.audit(self.config, self.dataset, self.directory)['cohort']
+
+    def test_default_one_seat_and_thousand_buyers_hundred_seats(self):
+        for vus, tickets in ((100, 1), (1000, 100)):
+            with self.subTest(vus=vus, tickets=tickets):
+                self.prepare(vus, tickets)
+                result = self.audit()
+                self.assertEqual(tickets, result['reservedWinners'])
+                self.assertEqual(vus - tickets, result['rejectedBuyers'])
+                self.assertEqual(0, result['authoritativeAvailability']['sold'])
+                self.assertEqual(tickets, len(result['authoritativeTickets']))
+                self.assertTrue(all(len(owners) == 1 for owners in result['winnersByTicket'].values()))
+
+    def test_http_conflicts_count_as_rejections_without_polling_them(self):
+        self.prepare()
+        for item in self.attempts[100:]:
+            item.update(status=409, orderId=None)
+        result = self.audit()
+        self.assertEqual((100, 900, 0), (result['http202'], result['http409'], result['asynchronousRejections']))
+        self.assertEqual(100, sum(service == 'orders' for service, _, _ in self.calls))
+
+    def test_duplicate_winner_for_one_seat_fails_even_when_counters_balance(self):
+        self.prepare()
+        self.orders['order-100'].update(status='AVAILABLE', workflowStatus='REJECTED', activeTicketIds=[])
+        self.orders['order-101'].update(status='RESERVED', workflowStatus='AWAITING_CONFIRMATION', activeTicketIds=['1'])
+        with self.assertRaisesRegex(RuntimeError, 'unique reservation'):
+            self.audit()
+
+    def test_wrong_assignment_and_out_of_range_vu_are_rejected(self):
+        for field, value in (('ticketId', '100'), ('vu', 1001)):
+            with self.subTest(field=field):
+                self.prepare()
+                self.attempts[0][field] = value
+                with self.assertRaises(RuntimeError):
+                    self.audit()
+
+    def test_order_identity_and_active_ticket_must_match_the_actual_attempt(self):
+        for field, value in (('orderId', 'other'), ('eventId', 'other'), ('requestedTicketIds', ['2']), ('activeTicketIds', ['2'])):
+            with self.subTest(field=field):
+                self.prepare()
+                self.orders['order-1'][field] = value
+                with self.assertRaises(RuntimeError):
+                    self.audit()
+
+    def test_sold_counts_or_reserved_ticket_drift_fail_despite_balanced_totals(self):
+        self.prepare()
+        self.snapshot.update(reserved=99, sold=1)
+        with self.assertRaisesRegex(RuntimeError, 'zero sales'):
+            self.audit()
+        self.prepare()
+        self.tickets[0]['status'] = 'SOLD'
+        with self.assertRaisesRegex(RuntimeError, 'unique reservations'):
+            self.audit()
+
+    def test_duplicate_missing_or_repeating_ticket_pages_are_rejected(self):
+        for tickets in ([{'eventId': 'event', 'ticketId': '1', 'status': 'RESERVED'}] * 100, []):
+            self.prepare()
+            self.tickets = tickets
+            with self.assertRaises(RuntimeError):
+                self.audit()
+        self.prepare()
+        def repeated(service, path, **kwargs):
+            if '/tickets?' in path:
+                return 200, {'items': self.tickets[:1] if 'cursor=' not in path else self.tickets[1:2], 'nextCursor': 'same'}
+            return self.http(service, path, **kwargs)
+        with self.assertRaisesRegex(RuntimeError, 'pagination did not advance'):
+            self.audit(repeated)
+
+    def test_authoritative_ticket_audit_follows_encoded_cursor(self):
+        self.prepare()
+        pages = []
+        def paginated(service, path, **kwargs):
+            if '/tickets?' in path:
+                pages.append(path)
+                if 'cursor=' not in path:
+                    return 200, {'items': self.tickets[:50], 'nextCursor': 'opaque+/='}
+                return 200, {'items': self.tickets[50:], 'nextCursor': None}
+            return self.http(service, path, **kwargs)
+        result = self.audit(paginated)
+        self.assertEqual(100, len(result['authoritativeTickets']))
+        self.assertEqual('/api/v1/events/event/tickets?limit=100&cursor=opaque%2B%2F%3D', pages[1])
 
 
 if __name__ == '__main__':
