@@ -4,7 +4,6 @@ import com.ticketing.orders.model.*;
 import com.ticketing.orders.model.gateways.*;
 import reactor.core.publisher.Mono;
 import java.time.Clock;
-import java.time.Duration;
 import java.util.*;
 public final class OrdersUseCase {
     private final OrdersPort port;
@@ -24,9 +23,7 @@ public final class OrdersUseCase {
             Order order=new Order(UUID.randomUUID().toString(),eventId,customer,sorted,List.of(),"AVAILABLE","RESERVING","",0,now,now.plusSeconds(600),type,actor,reason==null?"":reason);
             String fingerprint=Validation.hash(eventId+"\n"+String.join(",",sorted)+"\n"+customer+"\n"+type+"\n"+order.reason());
             Envelope message=Envelope.create(complimentary ? "ComplimentaryRequested" : "PurchaseRequested",order.orderId(),payload(order),now);
-            return port.create(order,Validation.hash(actor+"\n"+type+"\n"+key),fingerprint,message)
-                .flatMap(saved -> inventory.reserve(saved).timeout(Duration.ofMillis(500))
-                    .map(saved::withInventory).defaultIfEmpty(saved).onErrorReturn(saved));
+            return port.create(order,Validation.hash(actor+"\n"+type+"\n"+key),fingerprint,message);
         });
     }
     public Mono<Order> get(String customer,String id) {

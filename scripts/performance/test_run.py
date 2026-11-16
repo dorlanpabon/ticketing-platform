@@ -149,6 +149,32 @@ class CohortAuditTest(unittest.TestCase):
         self.assertEqual((100, 900, 0), (result['http202'], result['http409'], result['asynchronousRejections']))
         self.assertEqual(100, sum(service == 'orders' for service, _, _ in self.calls))
 
+    def test_reserving_orders_are_polled_until_asynchronous_outcomes(self):
+        self.prepare(vus=100, tickets=1)
+        observed = set()
+        def delayed(service, path, **kwargs):
+            status, value = self.http(service, path, **kwargs)
+            if service == 'orders' and value['orderId'] not in observed:
+                observed.add(value['orderId'])
+                return status, value | {'status': 'AVAILABLE', 'workflowStatus': 'RESERVING', 'activeTicketIds': []}
+            return status, value
+        with patch('run.time.sleep'):
+            result = self.audit(delayed)
+        self.assertEqual((1, 99, 0), (result['reservedWinners'], result['asynchronousRejections'], result['unresolved']))
+        self.assertEqual(200, sum(service == 'orders' for service, _, _ in self.calls))
+
+    def test_unresolved_reservations_fail_after_the_bounded_polling_window(self):
+        self.prepare(vus=100, tickets=1)
+        for order in self.orders.values():
+            order.update(status='AVAILABLE', workflowStatus='RESERVING', activeTicketIds=[])
+        clock = {'now': 0}
+        with patch('run.time.monotonic', side_effect=lambda: clock['now']), \
+                patch('run.time.sleep', side_effect=lambda _: clock.update(now=121)):
+            with self.assertRaises(RuntimeError):
+                self.audit()
+        report = json.loads((self.directory/'cohort-audit.json').read_text())
+        self.assertEqual((100, 0, 0), (report['unresolved'], report['reservedWinners'], report['asynchronousRejections']))
+
     def test_duplicate_winner_for_one_seat_fails_even_when_counters_balance(self):
         self.prepare()
         self.orders['order-100'].update(status='AVAILABLE', workflowStatus='REJECTED', activeTicketIds=[])

@@ -125,18 +125,8 @@ sequenceDiagram
     Orders->>ODB: Transacción: orden RESERVING + deadline + idempotencia + outbox
     ODB-->>Orders: Intención durable, reservationId = orderId
 
-    Orders->>Inventory: PUT reserva idempotente, presupuesto HTTP de 500 ms
-    alt Resultado conocido dentro del presupuesto
-        Inventory->>IDB: Reserva todo o nada + contadores + auditoría + outbox de estado y timer
-        IDB-->>Inventory: Resultado durable de éxito o rechazo
-        Inventory-->>Orders: Snapshot y versión autoritativos
-        Orders->>Orders: Responder con snapshot, proyección durable se actualiza asíncronamente
-    else Timeout o dependencia inaccesible
-        Note over Orders,Inventory: El resultado es desconocido, no cancelar por suposición
-    end
-
-    Orders-->>Customer: 202 + orderId + estado observado + URL de consulta
-    Note over Customer,Orders: 202 garantiza trabajo persistido, puede continuar RESERVING
+    Orders-->>Customer: 202 + orderId + RESERVING + URL de consulta
+    Note over Customer,Orders: 202 garantiza trabajo persistido; expiresAt = requestedAt + 600 s
     Note over Relay,Queue: La publicación puede ocurrir antes o después de la respuesta, no se espera para aceptar
 
     Relay->>ODB: Reclamar outbox pendiente con lease
@@ -144,14 +134,14 @@ sequenceDiagram
     Queue-->>Relay: Publicación confirmada
     Relay->>ODB: Registrar entrega del outbox
     Queue->>Inventory: Entregar comando, puede estar duplicado
-    Inventory->>IDB: Ejecutar la misma operación idempotente y verificar deadline
+    Inventory->>IDB: Reserva atómica + contadores + auditoría + outbox; verificar deadline
     IDB-->>Inventory: Misma reserva o resultado terminal, sin doble descuento
     Inventory->>Queue: ACK después de persistir el resultado
     Note over Inventory,IDB: Outbox publica snapshot a Órdenes y ExpireReservation a expirations
     Note over Inventory,IDB: DelaySeconds usa el deadline original, ceil restante entre 0 y 600 s
 ```
 
-La publicación y el intento HTTP pueden competir. Ambos utilizan el mismo identificador y contenido canónico. El plazo se fija al aceptar la solicitud y no se reinicia al consumirla. Un rechazo también se registra para impedir que una redelivery tardía reserve una orden ya rechazada.
+La reserva se procesa desde el comando durable publicado en SQS. Las redeliveries y la reconciliación conservan el mismo identificador y contenido canónico. El plazo se fija al aceptar la solicitud y no se reinicia al consumirla. Un rechazo también se registra para impedir que una redelivery tardía reserve una orden ya rechazada.
 
 La respuesta `202` no afirma que SQS ya recibió el mensaje si este permanece en outbox. El relay recupera publicaciones pendientes cuando la cola vuelve a estar disponible.
 

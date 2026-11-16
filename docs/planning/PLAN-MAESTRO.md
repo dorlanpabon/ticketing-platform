@@ -173,9 +173,9 @@ Capacidad y numeración quedan inmutables. No se venden inventarios parciales.
 1. Órdenes valida identidad, formato y clave idempotente.
 2. Guarda orden, hash canónico, deadline y `PurchaseRequested` en una transacción local.
 3. Fija `reservationId=orderId`, sin regenerarlo en retries.
-4. Intenta una reserva HTTP breve, con presupuesto de 500 ms.
-5. El consumidor ejecuta la misma operación idempotente: verifica disponibilidad real y recupera solicitudes interrumpidas.
-6. Puede responder `202 RESERVING`; nunca afirmar reserva sin resultado autoritativo.
+4. Responde `202 RESERVING` tras persistir la orden nueva y su intención durable.
+5. El relay publica `PurchaseRequested` en SQS; Inventory verifica disponibilidad y ejecuta la reserva idempotente con el deadline original.
+6. Las consultas presentan el resultado autoritativo; la reconciliación recupera solicitudes interrumpidas.
 7. Inventario publica snapshots versionados del resultado.
 
 Un timeout no demuestra fracaso y no dispara cancelación especulativa. Un rechazo de disponibilidad también se persiste de forma terminal. Si compite con otro intento del mismo ID, una condición de inexistencia decide qué resultado prevalece; un rechazo no puede coexistir con una reserva exitosa para ese ID.

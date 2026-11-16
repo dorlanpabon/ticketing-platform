@@ -6,6 +6,7 @@ import com.ticketing.orders.model.gateways.*;
 import org.junit.jupiter.api.*;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 import java.time.*;
 import java.util.*;
@@ -19,17 +20,45 @@ class OrdersUseCaseTest {
     final OrdersUseCase useCase=new OrdersUseCase(port,inventory,Clock.fixed(now,ZoneOffset.UTC));
     Order order() { return new Order("order","event","owner",List.of("1"),List.of(),"AVAILABLE","RESERVING","",0,now,now.plusSeconds(600),"PURCHASE","owner",""); }
     Reservation state(String status,String resolution) { return new Reservation("order","event","owner",status,resolution,1,List.of("1"),status.equals("AVAILABLE")?List.of():List.of("1"),now.plusSeconds(600)); }
-    @Test void durableAcceptanceSurvivesInventoryFailureWithoutExtendingDeadline() {
-        when(port.create(any(),anyString(),anyString(),any())).thenAnswer(call -> Mono.just(call.getArgument(0)));
-        when(inventory.reserve(any())).thenReturn(Mono.error(new IllegalStateException("offline")));
+    @Test void durableAcceptancePreservesOriginalDeadlineAndOutboxWithoutCallingInventory() {
+        when(port.create(any(),anyString(),anyString(),any())).thenAnswer(call -> {
+            Order saved=call.getArgument(0); Envelope message=call.getArgument(3);
+            assertEquals(saved.orderId(),message.aggregateId());
+            assertEquals(saved.orderId(),message.payload().get("orderId"));
+            assertEquals(saved.requestedAt().toString(),message.payload().get("requestedAt"));
+            assertEquals(saved.expiresAt().toString(),message.payload().get("expiresAt"));
+            assertEquals(now,message.occurredAt());
+            return Mono.just(saved);
+        });
         StepVerifier.create(useCase.create("owner","request-0001","event",List.of("2","1"),"owner","",false))
-                .assertNext(saved -> { assertEquals("RESERVING",saved.workflowStatus()); assertEquals(now.plusSeconds(600),saved.expiresAt()); assertEquals(List.of("1","2"),saved.requestedTicketIds()); }).verifyComplete();
+                .assertNext(saved -> { assertEquals("RESERVING",saved.workflowStatus()); assertEquals(now,saved.requestedAt()); assertEquals(now.plusSeconds(600),saved.expiresAt()); assertEquals(List.of("1","2"),saved.requestedTicketIds()); }).verifyComplete();
         verify(port).create(any(),anyString(),anyString(),argThat(message -> message.type().equals("PurchaseRequested") && message.payload().get("ticketIds").equals(List.of("1","2"))));
+        verifyNoInteractions(inventory);
     }
-    @Test void reservationSnapshotIsReturnedAfterDurableIntent() {
-        when(port.create(any(),anyString(),anyString(),any())).thenReturn(Mono.just(order()));
-        when(inventory.reserve(any())).thenReturn(Mono.just(state("RESERVED","")));
-        StepVerifier.create(useCase.create("owner","request-0001","event",List.of("1"),"owner","",false)).assertNext(saved -> assertEquals("AWAITING_CONFIRMATION",saved.workflowStatus())).verifyComplete();
+    @Test void acceptanceWaitsForDurablePersistence() {
+        Sinks.One<Order> committed=Sinks.one();
+        Order saved=order();
+        when(port.create(any(),anyString(),anyString(),any())).thenReturn(committed.asMono());
+        StepVerifier.withVirtualTime(() -> useCase.create("owner","request-0001","event",List.of("1"),"owner","",false))
+                .expectSubscription().expectNoEvent(Duration.ofSeconds(1))
+                .then(() -> assertEquals(Sinks.EmitResult.OK,committed.tryEmitValue(saved)))
+                .expectNext(saved).verifyComplete();
+        verifyNoInteractions(inventory);
+    }
+    @Test void failedPersistenceCannotProduceAcceptance() {
+        var failure=new DomainFailure(503,"PERSISTENCE_UNAVAILABLE");
+        when(port.create(any(),anyString(),anyString(),any())).thenReturn(Mono.error(failure));
+        StepVerifier.create(useCase.create("owner","request-0001","event",List.of("1"),"owner","",false))
+                .expectErrorMatches(error -> error==failure).verify();
+        verifyNoInteractions(inventory);
+    }
+    @Test void idempotentReplayReturnsOriginalTerminalSnapshotAndDeadline() {
+        Order saved=new Order("order","event","owner",List.of("1"),List.of("1"),"SOLD","COMPLETED","NONE",3,
+                now.minusSeconds(45),now.plusSeconds(555),"PURCHASE","owner","");
+        when(port.create(any(),anyString(),anyString(),any())).thenReturn(Mono.just(saved));
+        StepVerifier.create(useCase.create("owner","request-0001","event",List.of("1"),"owner","",false))
+                .expectNext(saved).verifyComplete();
+        verifyNoInteractions(inventory);
     }
     @Test void invalidSelectionsNeverReachPersistence() {
         List<List<String>> invalid=Arrays.asList(null,List.of(),List.of("1","1"),List.of("01"),List.of("0"),List.of("-1"),Arrays.asList("1",null),java.util.stream.IntStream.rangeClosed(1,11).mapToObj(Integer::toString).toList());
@@ -39,9 +68,9 @@ class OrdersUseCaseTest {
     @Test void complimentaryRequiresReasonAndCreatesDistinctCommand() {
         StepVerifier.create(useCase.create("owner","request-0001","event",List.of("1"),"admin","",true)).expectError(DomainFailure.class).verify();
         when(port.create(any(),anyString(),anyString(),any())).thenAnswer(call -> Mono.just(call.getArgument(0)));
-        when(inventory.reserve(any())).thenReturn(Mono.empty());
         StepVerifier.create(useCase.create("owner","request-0002","event",List.of("1"),"admin","speaker",true)).expectNextCount(1).verifyComplete();
         verify(port).create(any(),anyString(),anyString(),argThat(message -> message.type().equals("ComplimentaryRequested")));
+        verifyNoInteractions(inventory);
     }
     @Test void ownerIsCheckedBeforeInventoryAndDependencyErrorsPropagate() {
         when(port.find("order")).thenReturn(Mono.just(order()));
