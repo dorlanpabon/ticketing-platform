@@ -14,7 +14,7 @@ Decisiones vigentes al 2026-11-16. El [modelo de ejecución](architecture-runtim
 
 **Contexto.** Guardar una orden y enviar un mensaje son operaciones en sistemas diferentes. Una caída entre ambas puede perder trabajo o duplicarlo.
 
-**Decisión.** Guardar orden e intención outbox atómicamente antes de responder 202. El relay publica, y solo después marca el envío. IDs estables y condiciones hacen inocuo repetir el efecto. Orders puede intentar reservar por HTTP durante 500 ms; el mensaje durable sigue siendo la recuperación.
+**Decisión.** Guardar orden e intención outbox atómicamente antes de responder 202. El relay publica en SQS, y solo después marca el envío; el consumidor de Inventory realiza la reserva. IDs estables y condiciones hacen inocuo repetir el efecto. La aceptación conserva `expiresAt=requestedAt+600s`; la publicación y los reintentos mantienen ese deadline. Las latencias de aceptación y procesamiento deben medirse por escenario.
 
 **Consecuencias.** 202 confirma recepción durable, no reserva ni venta. La interpretación del requisito de “encolado inmediato” incluye persistencia en outbox: no se garantiza presencia física inmediata en SQS. El backoff del relay puede retrasar su publicación. Se descarta responder éxito antes de persistir y se descarta una transacción distribuida DynamoDB/SQS inexistente. El consumidor reconoce un mensaje después del resultado durable.
 

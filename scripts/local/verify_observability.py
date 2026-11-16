@@ -159,17 +159,25 @@ def verify_business_traces(timeout):
         and span['parentSpanId'] == catalog_parent
         and span['startTimeUnixNano'] >= issued_ns - 5_000_000_000 for span in spans),
         'real Catalog HTTP trace', timeout)
+    code, order = request('orders', '/api/v1/orders', 'POST', {'eventId': event_id, 'ticketIds': ['1']},
+                          business_headers('local-customer-1'))
+    require(code == 202, f'Orders business request returned HTTP {code}')
+    order_id = order['orderId']
+    order_path = '/api/v1/orders/' + order_id
+    wait_for(lambda: request('orders', order_path, headers=business_headers('local-customer-1')),
+             lambda response: response[0] == 200 and response[1]['workflowStatus'] == 'AWAITING_CONFIRMATION'
+             and response[1]['status'] == 'RESERVED', 'asynchronous inventory reservation', timeout)
     orders_trace, orders_parent = uuid.uuid4().hex, uuid.uuid4().hex[:16]
     order_issued_ns = time.time_ns()
-    code, order = request('orders', '/api/v1/orders', 'POST', {'eventId': event_id, 'ticketIds': ['1']},
-                          business_headers('local-customer-1', orders_trace, orders_parent))
-    require(code == 202, f'Orders business request returned HTTP {code}')
+    code, held = request('orders', order_path, headers=business_headers('local-customer-1', orders_trace, orders_parent))
+    require(code == 200 and held['orderId'] == order_id and held['workflowStatus'] == 'AWAITING_CONFIRMATION'
+            and held['status'] == 'RESERVED', 'Traced order GET did not return the held reservation')
     orders_spans = wait_for(lambda: get_trace(orders_trace),
                            lambda spans: linked_http_spans(spans, orders_parent, order_issued_ns),
                            'linked Orders client and Inventory server spans', timeout)
-    return {'eventId': event_id, 'orderId': order['orderId'],
+    return {'eventId': event_id, 'orderId': order_id,
             'catalog': {'traceId': catalog_trace, 'spans': catalog_spans},
-            'ordersToInventory': {'traceId': orders_trace, 'spans': orders_spans},
+            'ordersToInventory': {'traceId': orders_trace, 'spans': orders_spans, 'operation': 'GET /api/v1/orders/{orderId}'},
             'transport': 'real HTTP business requests with incoming W3C traceparent',
             'sqsPropagationVerified': False}
 

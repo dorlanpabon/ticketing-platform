@@ -22,7 +22,7 @@ flowchart TB
   Edge --> CA[Catalog API]
   Edge --> OA[Orders API]
   Edge --> IA[Inventory API]
-  OA -->|HTTP privado / consulta y reserva acotada| IA
+  OA -->|HTTP privado / consulta de autoridad| IA
   OW[Orders worker] -->|Reconciliación HTTP privada| IA
 
   subgraph Catalog
@@ -57,7 +57,7 @@ Las APIs no consumen ni publican directamente en SQS: escriben negocio e intenci
 ## Reserva y confirmación
 
 1. Orders valida identidad, selección e Idempotency-Key, persiste orden e intención de compra con `requestedAt` y `expiresAt=requestedAt+600s`. Reintentar no crea otro plazo.
-2. Orders realiza además un intento HTTP de reserva en Inventory acotado a 500 ms. Si falla o agota el tiempo, la intención durable sigue disponible para el worker. La respuesta puede ser `202 Accepted` con estado todavía pendiente.
+2. Tras la transacción durable, Orders responde `202 Accepted`; una orden nueva continúa en `RESERVING`. El worker publica `PurchaseRequested` desde outbox hacia SQS y el consumidor de Inventory procesa la reserva con el deadline original.
 3. Inventory reclama entradas vencidas cuando corresponde y reserva mediante condiciones sobre estado/versión y una transacción. La reserva y su temporizador de expiración quedan persistidos con su outbox. Dos compradores concurrentes no pueden adquirir la misma entrada mediante una transición válida.
 4. Una confirmación aceptada por Orders produce ConfirmPurchase. Inventory verifica propiedad, ID del comando y deadline; transita RESERVED → PENDING_CONFIRMATION → SOLD. Si vence antes de completar, libera la retención. Un `202` de solicitud no significa venta confirmada.
 5. ReservationStateChanged actualiza Orders mediante versión de Inventory; un evento viejo no puede revertir una proyección más nueva. La reconciliación recupera eventos perdidos o retrasados consultando la autoridad.
