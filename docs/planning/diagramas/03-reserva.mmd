@@ -14,7 +14,7 @@ sequenceDiagram
     ODB-->>Orders: Intención durable, reservationId = orderId
 
     Orders-->>Customer: 202 + orderId + RESERVING + URL de consulta
-    Note over Customer,Orders: 202 garantiza trabajo persistido; expiresAt = requestedAt + 600 s
+    Note over Customer,Orders: 202 garantiza trabajo persistido, expiresAt = requestedAt + 600 s
     Note over Relay,Queue: La publicación puede ocurrir antes o después de la respuesta, no se espera para aceptar
 
     Relay->>ODB: Reclamar outbox pendiente con lease
@@ -22,7 +22,7 @@ sequenceDiagram
     Queue-->>Relay: Publicación confirmada
     Relay->>ODB: Registrar entrega del outbox
     Queue->>Inventory: Entregar comando, puede estar duplicado
-    Inventory->>IDB: Reserva atómica + contadores + auditoría + outbox; verificar deadline
+    Inventory->>IDB: Reserva atómica + contadores + auditoría + outbox, verificar deadline
     IDB-->>Inventory: Misma reserva o resultado terminal, sin doble descuento
     Inventory->>Queue: ACK después de persistir el resultado
     Note over Inventory,IDB: Outbox publica snapshot a Órdenes y ExpireReservation a expirations
