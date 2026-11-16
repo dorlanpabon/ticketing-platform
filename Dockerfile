@@ -4,7 +4,7 @@ WORKDIR /workspace
 COPY --chown=gradle:gradle gradle ./gradle
 COPY --chown=gradle:gradle services/${SERVICE} ./services/${SERVICE}
 USER gradle
-RUN --mount=type=cache,target=/home/gradle/.gradle,uid=1000,gid=1000 gradle -p services/${SERVICE} :app-service:bootJar --no-daemon --no-configuration-cache -x pitest
+RUN --mount=type=cache,target=/home/gradle/.gradle,uid=1000,gid=1000,sharing=locked gradle -p services/${SERVICE} :app-service:bootJar --no-daemon --no-configuration-cache -x pitest
 RUN cp services/${SERVICE}/applications/app-service/build/libs/*.jar /tmp/application.jar
 
 FROM eclipse-temurin:25-jre-alpine@sha256:e1898fd6a11fc965a994d8ace186fd3585aeb636cf8f05f47a723fcfee0b0918
