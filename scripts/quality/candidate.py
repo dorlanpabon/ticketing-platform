@@ -7,6 +7,7 @@ deploys AWS resources. Missing acceptance tests block candidate publication.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,18 +20,76 @@ from artifacts import api, download, verified_run
 from quality import QualityError, ROOT, SERVICES, SHA, check_coverage, content_hash, execute, git, tool, verify_manifest, write_json
 
 
+def acceptance_report(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Acceptance evidence must be readable JSON") from error
+    if not isinstance(value, dict):
+        raise QualityError("Acceptance evidence must be a JSON object")
+    return value
+
+
+def acceptance_child(name: str, value: dict) -> None:
+    if value.get("status") != "passed" or "error" in value:
+        raise QualityError(f"Acceptance child did not pass: {name}")
+    strings = {"integration": ("eventId", "orderId"), "concurrency": ("eventId",),
+               "recovery": ("eventId", "orderId", "scenario"), "expiry": ("eventId", "orderId", "expiresAt")}
+    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in strings.get(name, ())):
+        raise QualityError(f"Acceptance child has missing identity fields: {name}")
+    expected = {
+        "concurrency": {"buyers": 100, "winners": 1, "rejected": 99},
+        "recovery": {"deadlinePreserved": True}, "containerSmoke": {"readiness": "UP"},
+        "expiry": {"periodicRecoveryStopped": True, "httpLazyExpiryDisabled": True,
+                   "durableExpiredState": "RESERVATION_EXPIRED", "soldTicketPreserved": True},
+    }
+    if any(type(value.get(key)) is not type(required) or value[key] != required
+           for key, required in expected.get(name, {}).items()):
+        raise QualityError(f"Acceptance child has invalid assertions: {name}")
+    lists = {"integration": ("assertions", {"durable202", "idempotency", "deadline", "owner", "confirmation", "courtesy", "all-or-none", "counters"}),
+             "architecture": ("rules", {"domain-dependencies", "bounded-context-isolation", "nonblocking-reactive-code"}),
+             "containerSmoke": ("services", {"catalog", "orders", "inventory"})}
+    if name in lists:
+        key, required = lists[name]
+        items = value.get(key)
+        if not isinstance(items, list) or any(not isinstance(item, str) for item in items) or set(items) != required:
+            raise QualityError(f"Acceptance child has incomplete checks: {name}")
+    if name == "recovery" and (type(value.get("consumerReplicas")) is not int or value["consumerReplicas"] < 2):
+        raise QualityError("Recovery evidence requires at least two consumers")
+    if name == "expiry":
+        lag = value.get("timerProcessingLagSeconds")
+        if type(lag) not in (int, float) or not math.isfinite(lag) or lag < 0:
+            raise QualityError("Expiry evidence has invalid timer lag")
+    if name == "architecture":
+        services = value.get("services")
+        if not isinstance(services, dict) or set(services) != {"catalog", "orders", "inventory"}:
+            raise QualityError("Architecture evidence requires all three services")
+        for report in services.values():
+            if not isinstance(report, dict) or type(report.get("tests")) is not int or report["tests"] != 3 \
+                    or not isinstance(report.get("report"), str) or not report["report"] \
+                    or not isinstance(report.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", report["sha256"]):
+                raise QualityError("Architecture evidence has an incomplete test report")
+
+
 def acceptance_evidence(path: Path, root: Path, sha: str, tree: str) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = acceptance_report(path)
     if value.get("commit") != sha or value.get("tree") != tree:
         raise QualityError("Acceptance report belongs to a different candidate")
     if value.get("dirty") is not False:
         raise QualityError("Acceptance evidence requires a clean candidate tree")
+    if not isinstance(value.get("checks"), dict):
+        raise QualityError("Acceptance evidence requires a checks object")
+    root = root.resolve()
     result = {}
     for name in ("integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry"):
-        check = value.get("checks", {}).get(name, {})
-        report = (root / check.get("evidence", "")).resolve()
-        if check.get("status") != "passed" or not report.is_relative_to(root) or not report.is_file() or not report.stat().st_size:
+        check = value["checks"].get(name)
+        if not isinstance(check, dict) or check.get("status") != "passed" \
+                or not isinstance(check.get("evidence"), str) or not check["evidence"]:
             raise QualityError(f"Missing actual acceptance evidence: {name}")
+        report = (root / check["evidence"]).resolve()
+        if not report.is_relative_to(root) or not report.is_file() or not report.stat().st_size:
+            raise QualityError(f"Missing actual acceptance evidence: {name}")
+        acceptance_child(name, acceptance_report(report))
         result[name] = {"path": report.relative_to(root).as_posix(), "sha256": hashlib.sha256(report.read_bytes()).hexdigest()}
     return result
 

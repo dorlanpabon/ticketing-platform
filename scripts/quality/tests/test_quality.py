@@ -69,6 +69,17 @@ class GitSnapshotsTest(unittest.TestCase):
         quality.snapshot(self.repo, "HEAD", target)
         self.assertEqual("base", (target / "base.txt").read_text())
 
+    def test_snapshot_preserves_crlf_and_binary_git_blobs(self):
+        self.git("config", "core.autocrlf", "false")
+        files = {"policy.txt": b"strict\r\n", "policy.bin": b"\xff\x00\r\n"}
+        for name, content in files.items():
+            (self.repo / name).write_bytes(content)
+            self.git("add", name)
+        target = self.repo / "snapshot"
+        quality.snapshot(self.repo, self.git("write-tree"), target)
+        for name, content in files.items():
+            self.assertEqual(content, (target / name).read_bytes())
+
 
 class ValidationTest(unittest.TestCase):
     def test_reject_archive_escape_and_symlink(self):
@@ -93,6 +104,34 @@ class ValidationTest(unittest.TestCase):
             with self.assertRaises(quality.QualityError):
                 quality.policy_guard(trusted, candidate)
             quality.policy_guard(trusted, candidate, quality.content_hash(candidate, True))
+
+    def test_policy_fingerprint_normalizes_only_utf8_text_line_endings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trusted, candidate = Path(directory) / "trusted", Path(directory) / "candidate"
+            for location in (trusted, candidate):
+                (location / "config/quality").mkdir(parents=True)
+            text = "strict=si\nlabel=política\n".encode("utf-8")
+            (trusted / "config/quality/rule").write_bytes(text)
+            rule = candidate / "config/quality/rule"
+            rule.write_bytes(text.replace(b"\n", b"\r\n"))
+            self.assertEqual(quality.content_hash(trusted, True), quality.content_hash(candidate, True))
+            quality.policy_guard(trusted, candidate)
+            self.assertNotEqual(quality.content_hash(trusted), quality.content_hash(candidate))
+            self.assertEqual(text.replace(b"\n", b"\r\n"), rule.read_bytes())
+            rule.write_bytes(b"strict=no\r\n")
+            with self.assertRaises(quality.QualityError):
+                quality.policy_guard(trusted, candidate)
+
+    def test_policy_fingerprint_keeps_binary_and_non_utf8_bytes_exact(self):
+        for content in (b"binary\x00\r\n", b"\xff\r\n"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "config/quality").mkdir(parents=True)
+                rule = root / "config/quality/rule"
+                rule.write_bytes(content)
+                expected = quality.content_hash(root, True)
+                rule.write_bytes(content.replace(b"\r\n", b"\n"))
+                self.assertNotEqual(expected, quality.content_hash(root, True))
 
     def test_valid_branch_flow_and_release_freeze(self):
         for base, head in (("develop", "feature/reservations"), ("release", "develop"), ("main", "release")):

@@ -157,7 +157,16 @@ def content_hash(root: Path, protected_only: bool = False) -> str:
             continue
         if "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
-        digest.update(name.encode() + b"\0" + path.read_bytes() + b"\0")
+        content = path.read_bytes()
+        if protected_only and b"\0" not in content:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+            else:
+                # Normalize only the text-policy fingerprint; Git snapshots stay byte-exact.
+                content = content.replace(b"\r\n", b"\n")
+        digest.update(name.encode() + b"\0" + content + b"\0")
     return digest.hexdigest()
 
 

@@ -18,6 +18,9 @@ if (vus > 50 && __ENV.PERF_FULL !== '1' && __ENV.PERF_STRESS !== '1') {
   throw new Error('More than 50 VUs requires an explicit full/stress opt-in');
 }
 if (cohort && __ENV.PERF_STRESS !== '1') throw new Error('Cohort requires PERF_STRESS=1');
+if (cohort && (!Number.isInteger(dataset.hotEvent.capacity) || dataset.hotEvent.capacity < 1 || dataset.hotEvent.capacity > vus)) {
+  throw new Error('Cohort capacity must be in 1..VUs');
+}
 if (vus < 1 || vus > 1000 || maxRps < 1 || maxRps > 1000) throw new Error('Invalid workload bounds');
 if (!/^\d+s$/.test(duration) || Number(duration.slice(0, -1)) < 1 || Number(duration.slice(0, -1)) > 1800) {
   throw new Error('Duration must be 1..1800 seconds');
@@ -203,11 +206,12 @@ export function cohortAttempt() {
   const wait = dataset.cohortStartsAt - Date.now();
   if (wait > 0) sleep(wait / 1000);
   const sentAt = Date.now();
+  const ticketId = String((exec.vu.idInTest - 1) % dataset.hotEvent.capacity + 1);
   const response = request('orders', '/api/v1/orders', 'order_create', 'POST',
-    { eventId: dataset.hotEvent.eventId, ticketIds: ['1'] }, `${dataset.runId}-cohort-${exec.vu.idInTest}`);
+    { eventId: dataset.hotEvent.eventId, ticketIds: [ticketId] }, `${dataset.runId}-cohort-${exec.vu.idInTest}`);
   const body = response.status === 202 ? json(response) : null;
   if (response.status === 202) accepted.add(1);
-  console.log(JSON.stringify({ kind: 'cohort_attempt', vu: exec.vu.idInTest, sentAt, status: response.status, orderId: body && body.orderId }));
+  console.log(JSON.stringify({ kind: 'cohort_attempt', vu: exec.vu.idInTest, ticketId, sentAt, status: response.status, orderId: body && body.orderId }));
 }
 
 export function handleSummary(data) {
