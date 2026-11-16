@@ -436,10 +436,10 @@ def validate_sonar_metrics(metrics: dict[str, str]) -> None:
         raise QualityError("New-code coverage is below 90%")
 
 
-def sonar_evidence(host: str, token: str, project: str, task_id: str, sha: str, timeout: int = 600) -> dict:
+def sonar_evidence(host: str, token: str, project: str, task_id: str, sha: str, timeout: int = 600, *, ce_token: str | None = None) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), token)["task"]
+        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), ce_token or token)["task"]
         if task.get("componentKey") != project:
             raise QualityError("Sonar task belongs to another project")
         if task["status"] == "SUCCESS":
@@ -563,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise QualityError("SONAR_TOKEN is required")
             reader = os.environ.get("SONAR_READ_TOKEN") or token
             write_json(args.output, sonar_evidence(os.environ.get("SONAR_HOST_URL") or "http://localhost:19000", reader,
-                                                   args.project, args.task_id, sha))
+                                                   args.project, args.task_id, sha, ce_token=token))
         elif args.command == "verify-manifest":
             value = json.loads(args.manifest.read_text(encoding="utf-8"))
             verify_manifest(value, git(repo, "rev-parse", f"{revision(repo, args.revision)}^{{tree}}"), args.source_sha, args.cloud)

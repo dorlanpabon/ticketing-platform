@@ -60,7 +60,7 @@ The default host endpoint is `http://127.0.0.1:19000`; set `SONAR_HOST_URL`
 explicitly if the Compose mapping differs.
 Initialize the server locally, replace its initial administrator credential, and
 provide `SONAR_ADMIN_TOKEN` only while running `sonar_setup.py`. It configures
-three private projects and the quality gate without printing credentials. Use a
+three private projects and the quality gate without printing credentials. Use
 separate project-analysis tokens (`SONAR_TOKEN_CATALOG`, `SONAR_TOKEN_ORDERS`,
 `SONAR_TOKEN_INVENTORY`) in environment `quality-develop` and restrict that
 environment to `develop`. The dedicated self-hosted runner must have Python,
@@ -69,7 +69,8 @@ Project-analysis tokens cannot read all private-project metrics. Supply a
 separate `SONAR_READ_TOKEN` from a user with Browse permission on only these
 three projects, and no global Execute Analysis/Create Projects permission.
 The build receives neither analysis nor reader credentials; each scanner process
-receives only its own project token. Evidence retrieval uses the read-only token.
+receives only its own project token. Compute-task polling uses that scoped project
+token; analysis history, quality gates and metrics use the read-only token.
 
 An exact trusted `develop` push in CI, or explicit local mode on a clean
 `develop` checkout, updates `ticketing-catalog`, `ticketing-orders` and

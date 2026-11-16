@@ -73,6 +73,11 @@ gradle.projectsEvaluated {
     def merged = rootProject.tasks.named('jacocoMergedReport', JacocoReport).get()
     merged.setDependsOn(rootProject.subprojects.collect { it.tasks.named('test') })
     merged.executionData.setFrom(rootProject.subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
+    // The scaffold's scanner also requests the optional all-module PIT aggregate.
+    // Keep it available manually; automatic analysis uses the required domain gate.
+    def scanner = rootProject.tasks.named('sonar').get()
+    scanner.setDependsOn(scanner.dependsOn.findAll { it != 'pitestReportAggregate' })
+    scanner.dependsOn(rootProject.tasks.named('mutationGate'), rootProject.tasks.named('unitCoverageGate'))
 }
 
 tasks.register('unitCoverageGate', JacocoCoverageVerification) {
