@@ -13,6 +13,26 @@ import tools.jackson.databind.json.JsonMapper;
 import static org.mockito.Mockito.*;
 
 class SQSProcessorTest {
+    @Test void acceptsFullInventoryWireSnapshotWithNullConfirmationId() {
+        var useCase = mock(OrdersUseCase.class);
+        var processor = new SQSProcessor(useCase);
+        var state = new Reservation("order", "event", "customer", "RESERVED", "NONE", 1,
+                java.util.List.of("1"), java.util.List.of("1"), Instant.parse("2026-11-16T12:10:00Z"));
+        when(useCase.receive(any(Envelope.class), eq(state))).thenReturn(Mono.empty());
+        var message = Message.builder().body("""
+                {"messageId":"inventory-message","type":"ReservationStateChanged","schemaVersion":1,
+                 "aggregateId":"order","aggregateVersion":1,"correlationId":"order","causationId":"order",
+                 "occurredAt":"2026-11-16T12:00:00Z","payload":{
+                   "orderId":"order","eventId":"event","customerId":"customer","status":"RESERVED",
+                   "resolution":"NONE","inventoryVersion":1,"requestedTicketIds":["1"],"activeTicketIds":["1"],
+                   "requestedAt":"2026-11-16T12:00:00Z","expiresAt":"2026-11-16T12:10:00Z",
+                   "type":"PURCHASE","actorId":"customer","reason":"","confirmationId":null}}
+                """).build();
+        StepVerifier.create(processor.apply(message)).verifyComplete();
+        verify(useCase).receive(argThat(envelope -> envelope.payload().containsKey("confirmationId")
+                && envelope.payload().get("confirmationId") == null), eq(state));
+    }
+
     @Test void mapsVersionedInventorySnapshotAndPropagatesFailures() {
         var useCase = mock(OrdersUseCase.class);
         var processor = new SQSProcessor(useCase);
