@@ -239,6 +239,20 @@ class ValidationTest(unittest.TestCase):
                 with self.subTest(metric=name, invalid=invalid), self.assertRaises(quality.QualityError):
                     quality.validate_sonar_metrics(self.metrics() | {name: invalid})
 
+    def test_scoped_analysis_token_reads_only_compute_task(self):
+        sha = "a" * 40
+        analyses = {"analyses": [{"key": "analysis", "revision": sha}]}
+        responses = [{"task": {"componentKey": "ticketing-orders", "status": "SUCCESS", "analysisId": "analysis"}},
+                     analyses, {"projectStatus": {"status": "OK"}},
+                     {"component": {"measures": [{"metric": key, "value": value} for key, value in self.metrics().items()]}},
+                     analyses]
+        with patch.object(quality, "sonar_request", side_effect=responses) as remote:
+            evidence = quality.sonar_evidence("http://localhost:19000", "reader-fixture", "ticketing-orders", "task", sha,
+                                              ce_token="scoped-analysis-fixture")
+        self.assertEqual("OK", evidence["qualityGate"])
+        self.assertEqual("scoped-analysis-fixture", remote.call_args_list[0].args[2])
+        self.assertTrue(all(call.args[2] == "reader-fixture" for call in remote.call_args_list[1:]))
+
     def test_sonar_analysis_with_old_sha_fails(self):
         responses = [{"task": {"componentKey": "ticketing-orders", "status": "SUCCESS", "analysisId": "analysis"}},
                      {"analyses": [{"key": "analysis", "revision": "b" * 40}]}]

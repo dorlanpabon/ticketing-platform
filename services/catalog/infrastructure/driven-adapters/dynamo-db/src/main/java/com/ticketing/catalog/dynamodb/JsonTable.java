@@ -15,7 +15,7 @@ public abstract class JsonTable extends com.ticketing.catalog.dynamodb.helper.Te
     protected final String table;
     protected final Clock clock;
     private final PollingCoordinator outboxPolling;
-    protected final JsonMapper mapper=JsonMapper.builder().disable(tools.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
+    protected final JsonMapper jsonMapper=JsonMapper.builder().disable(tools.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
     protected JsonTable(DynamoDbAsyncClient client,String table,Clock clock,org.reactivecommons.utils.ObjectMapper objectMapper) {
         super(software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedAsyncClient.builder().dynamoDbClient(client).build(),
                 objectMapper, java.util.function.Function.identity(), ModelEntity.class, table, "gsi1");
@@ -28,9 +28,9 @@ public abstract class JsonTable extends com.ticketing.catalog.dynamodb.helper.Te
     protected Mono<Map<String,AttributeValue>> get(String id) {
         return getDocument(client,table,key(id));
     }
-    protected <T> T decode(Map<String,AttributeValue> item,Class<T> type) { return mapper.readValue(item.get("data").s(),type); }
+    protected <T> T decode(Map<String,AttributeValue> item,Class<T> type) { return jsonMapper.readValue(item.get("data").s(),type); }
     protected Map<String,AttributeValue> item(String id,Object data) {
-        return new ModelEntity(id,mapper.writeValueAsString(data)).attributes();
+        return new ModelEntity(id,jsonMapper.writeValueAsString(data)).attributes();
     }
     protected TransactWriteItem put(Map<String,AttributeValue> item,String condition) {
         return TransactWriteItem.builder().put(Put.builder().tableName(table).item(item).conditionExpression(condition).build()).build();

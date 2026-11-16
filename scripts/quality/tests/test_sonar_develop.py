@@ -137,14 +137,18 @@ class SonarDevelopTest(unittest.TestCase):
                     raise sonar.QualityError('Fixture scanner gate failed')
             return subprocess.CompletedProcess(arguments, 0, stdout=b'', stderr=b'')
 
-        def evidence(*args):
+        def evidence(*args, **kwargs):
+            self.assertEqual("analysis-fixture", kwargs.get("ce_token"))
+            self.assertEqual("reader-fixture", args[1])
             if on_evidence:
                 on_evidence()
             return {'project': 'ticketing-catalog', 'commit': self.sha, 'ceTaskId': 'fixture-task', 'status': 'passed'}
 
         def remote_metadata(host, route, token):
             if route.startswith('/api/ce/task?'):
+                self.assertEqual('analysis-fixture', token)
                 return {'task': {'componentKey': 'ticketing-catalog', 'status': 'SUCCESS', 'analysisId': 'fixture-analysis'}}
+            self.assertEqual('reader-fixture', token)
             return {'projectStatus': {'status': 'ERROR' if scan_failure else 'OK'}}
 
         environment = self.environment if local else self.ci_environment()

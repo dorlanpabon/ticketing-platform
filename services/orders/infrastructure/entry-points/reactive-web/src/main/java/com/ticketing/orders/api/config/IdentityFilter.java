@@ -14,17 +14,17 @@ import java.util.Set;
 public final class IdentityFilter implements WebFilter {
     private static final String LOCAL = "local";
     private final String mode;
-    private final boolean local;
+    private final boolean localProfileActive;
     public IdentityFilter(@Value("${AUTH_MODE:trusted-gateway}") String mode,@Value("${spring.profiles.active:}") String profile) {
-        this.mode=mode; this.local=Arrays.asList(profile.split(",")).contains(LOCAL);
-        if(mode.equals(LOCAL) && !local) throw new IllegalStateException("Local authentication requires the local profile");
+        this.mode=mode; this.localProfileActive=Arrays.asList(profile.split(",")).contains(LOCAL);
+        if(mode.equals(LOCAL) && !localProfileActive) throw new IllegalStateException("Local authentication requires the local profile");
         if(!Set.of(LOCAL,"trusted-gateway").contains(mode)) throw new IllegalStateException("Unsupported authentication mode");
     }
     @Override public Mono<Void> filter(ServerWebExchange exchange,WebFilterChain chain) {
         if(!exchange.getRequest().getPath().value().startsWith("/api/")) return chain.filter(exchange);
         return Mono.defer(() -> {
             String subject; boolean admin;
-            if(local && mode.equals(LOCAL)) {
+            if(localProfileActive && mode.equals(LOCAL)) {
                 String bearer=exchange.getRequest().getHeaders().getFirst("Authorization");
                 if(bearer==null || !Set.of("Bearer local-customer-1","Bearer local-customer-2","Bearer local-admin").contains(bearer)) return Mono.error(new DomainFailure(401,"UNAUTHENTICATED"));
                 subject=bearer.substring(7); admin=subject.equals("local-admin");

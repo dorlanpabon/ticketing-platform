@@ -83,7 +83,7 @@ def report_files(directory: Path, complete: bool = False) -> dict[str, list[Path
     return reports
 
 
-def scanner_diagnostics(directory: Path, host: str, reader: str, project: str) -> dict:
+def scanner_diagnostics(directory: Path, host: str, reader: str, project: str, ce_token: str | None = None) -> dict:
     result = {"diagnosticOnly": True, "project": project}
     tasks = list(directory.glob("**/report-task.txt"))
     result["reportTaskCount"] = len(tasks)
@@ -95,7 +95,7 @@ def scanner_diagnostics(directory: Path, host: str, reader: str, project: str) -
         return result
     result["ceTaskId"] = task_id
     try:
-        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), reader)["task"]
+        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), ce_token or reader)["task"]
         if task.get("componentKey") != project:
             result["projectMismatch"] = True
             return result
@@ -134,7 +134,8 @@ def preserve_reports(source: Path, output: Path, identity: dict, host: str, read
                 artifacts.append({"kind": kind, "path": relative.as_posix(),
                                   "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)})
         manifest["services"][service] = {"buildCompleted": service in completed, "reports": artifacts,
-            "scanner": scanner_diagnostics(directory, host, reader, "ticketing-" + service)}
+            "scanner": scanner_diagnostics(directory, host, reader, "ticketing-" + service,
+                os.environ.get("SONAR_TOKEN_" + service.upper()) or os.environ.get("SONAR_TOKEN"))}
     write_json(output / "report-manifest.json", manifest)
 
 
@@ -168,7 +169,7 @@ def analyze_projects(source: Path, expected: str, host: str, reader: str, local:
         task_id = properties.get("ceTaskId")
         if not task_id:
             raise QualityError("Scanner did not provide ceTaskId")
-        evidence = sonar_evidence(host, reader, "ticketing-" + service, task_id, expected)
+        evidence = sonar_evidence(host, reader, "ticketing-" + service, task_id, expected, ce_token=token)
         verify_checkout(expected, local, source)
         evidence["unitCoverage"] = coverage
         results[service] = evidence
