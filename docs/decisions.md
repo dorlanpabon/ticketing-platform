@@ -42,9 +42,9 @@ Decisiones vigentes al 2026-11-16. El [modelo de ejecución](architecture-runtim
 
 ## ADR-006 — SQS Standard y emulación local
 
-**Decisión.** Usar SQS Standard, cuatro colas principales con DLQ de consumo y otra DLQ AWS para fallos de entrega del Scheduler. Duplicados y desorden son parte del contrato. DynamoDB Local y ElasticMQ mantienen volúmenes persistentes y permiten ejecutar sin cuenta AWS.
+**Decisión.** Usar SQS Standard, cuatro colas principales con DLQ de consumo y otra DLQ AWS para fallos de entrega del Scheduler. Duplicados y desorden son parte del contrato. Compose usa LocalStack para SQS y DynamoDB Local para las tablas. Se puede ejecutar sin cuenta AWS.
 
-**Consecuencias.** ElasticMQ implementa una API compatible para desarrollo; no es SQS administrado. LocalStack es una alternativa viable, pero cambiar de emulador no verifica IAM, cuotas ni rendimiento de AWS. No se mezclan un error de entrega Scheduler→SQS y un error del consumidor: sus DLQ y runbooks son distintos. El replay conserva envelope, ID y deadline.
+**Consecuencias.** Las pruebas ejecutadas con LocalStack verifican el flujo emulado. IAM, cuotas y rendimiento requieren una validación en AWS. La entrega Scheduler→SQS y el procesamiento del consumidor tienen DLQ y procedimientos de recuperación propios. El replay conserva envelope, ID y deadline.
 
 ## ADR-007 — Scaffold oficial y calidad desde DEV
 

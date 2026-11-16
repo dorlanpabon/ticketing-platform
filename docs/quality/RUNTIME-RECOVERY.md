@@ -6,7 +6,7 @@ Each context has an API role and a worker role using the same image. API replica
 
 `expiresAt` remains immutable and at most 600 seconds after original order acceptance. A held reservation writes its `ExpireReservation` timer into the transactional outbox. Publication uses the remaining deadline as the SQS message delay; retries cannot extend the reservation. The consumer uses conditional state transitions, so a delayed or duplicate timer cannot release SOLD tickets.
 
-The dedicated `inventory-expirations` queue has a 60 second visibility timeout, 20 second long polling and a separate DLQ after five receives. EventBridge Scheduler sends one recovery sweep per minute in AWS. Locally, the single `expiry-recovery` container publishes the same envelope to ElasticMQ; it is not an EventBridge emulator. Workers do not perform a direct local scheduled sweep in Compose. Recovery acquires a global lease before querying the expiration index.
+The dedicated `inventory-expirations` queue has a 60 second visibility timeout, 20 second long polling and a separate DLQ after five receives. EventBridge Scheduler sends one recovery sweep per minute in AWS. Locally, the single `expiry-recovery` container publishes the same envelope to SQS in LocalStack. Workers process sweep messages after acquiring a global lease to query the expiration index.
 
 Delivery and materialization can lag behind the business deadline. Confirmation and allocation must enforce the immutable deadline regardless of consumer availability. Recovery measurements are not promises of exact delivery time.
 

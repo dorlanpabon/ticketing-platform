@@ -462,9 +462,9 @@ Rollback a digest anterior aprobado y configuración compatible, registrando evi
 
 ## 11. Docker, seguridad y observabilidad
 
-Compose incluye tres imágenes con seis procesos de negocio (API/worker por contexto), DynamoDB Local persistente, ElasticMQ persistente con cuatro colas/cuatro DLQ, bootstrap idempotente, un emisor `expiry-recovery`, identidades locales de prueba y healthchecks. Arranque: `docker compose up --build --wait`. Fixtures mediante comando explícito; reiniciar no altera inventario. Los workers no publican puertos al host.
+Compose incluye tres imágenes con seis procesos de negocio (API/worker por contexto), DynamoDB Local con volumen, SQS en LocalStack con cuatro colas y cuatro DLQ, bootstrap idempotente, un emisor `expiry-recovery`, identidades locales de prueba y healthchecks. Ejecutar `docker compose up --build --wait` para arrancar el entorno. Las pruebas crean sus propios datos mediante comandos explícitos y los workers conservan sus puertos en la red interna.
 
-Perfil observability con OpenTelemetry Collector, Prometheus, Grafana y backend local de trazas. Perfil quality independiente para Sonar. ElasticMQ es una alternativa SQS-compatible local; no equivale a validar IAM, límites, latencias y comportamiento de AWS real.
+Perfil observability con OpenTelemetry Collector, Prometheus, Grafana y backend local de trazas. Perfil quality independiente para Sonar. Las pruebas SQS con LocalStack cubren los flujos emulados. IAM, cuotas, latencias y comportamiento del servicio administrado se verifican en AWS.
 
 Seguridad: task role por contexto y rol API/worker, separado de execution role; APIs sin acceso SQS y mínimo acceso a tablas/índices/colas; sin access keys permanentes; cifrado; CORS cerrado; límites de recursos; aplicaciones no root, capacidades mínimas y filesystem de solo lectura; excepciones de emuladores documentadas; Actuator restringido.
 
@@ -611,7 +611,6 @@ La demostración seguirá la guía adjunta: arquitectura, compra, contención, d
 - [Backend S3 de Terraform](https://developer.hashicorp.com/terraform/language/backend/s3).
 - [OIDC GitHub/AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
 - [Checkov sobre Terraform Plan](https://www.checkov.io/7.Scan%20Examples/Terraform%20Plan%20Scanning.html).
-- [ElasticMQ](https://github.com/softwaremill/elasticmq).
 - [Capacidades de Sonar Community](https://docs.sonarsource.com/sonarqube-community-build/feature-comparison-table), [scanner Gradle](https://docs.sonarsource.com/sonarqube-community-build/analyzing-source-code/scanners/sonarscanner-for-gradle), [Java](https://docs.sonarsource.com/sonarqube-community-build/analyzing-source-code/languages/java) y [espera del Quality Gate](https://docs.sonarsource.com/sonarqube-community-build/analyzing-source-code/analysis-parameters/parameters-not-settable-in-ui).
 - [PMD Java](https://pmd.github.io/pmd/pmd_languages_java.html) y [PMD 7.29.0](https://github.com/pmd/pmd/releases/tag/pmd_releases%2F7.29.0).
 

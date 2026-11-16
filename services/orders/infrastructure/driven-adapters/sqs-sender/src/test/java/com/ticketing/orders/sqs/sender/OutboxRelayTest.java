@@ -63,7 +63,7 @@ class OutboxRelayTest {
         var metric = mock(MetricPublisher.class);
         try (
             var local = config.configSqs(
-                new SqsPublisherProperties("us-east-1", "queue", "http://localhost:19324"), metric);
+                new SqsPublisherProperties("us-east-1", "queue", "http://localhost:4566"), metric);
             var aws = config.configSqs(new SqsPublisherProperties("us-east-1", "queue", null), metric);
             var blank = config.configSqs(new SqsPublisherProperties("us-east-1", "queue", ""), metric)) {
             assertTrue(local.serviceClientConfiguration().endpointOverride().isPresent());

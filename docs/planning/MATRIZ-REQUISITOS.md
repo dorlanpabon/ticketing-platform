@@ -45,7 +45,7 @@
 | T02 | PDF, p. 4 | Spring Boot 4.x. | Versión 4.x fijada en los tres servicios y compatible con el scaffold. | Dependencias resueltas, build y arranque de los tres servicios. | PENDIENTE |
 | T03 | PDF, pp. 3–5 | Spring WebFlux y operaciones no bloqueantes. | WebFlux, Reactor, `WebClient` y clientes asíncronos del AWS SDK v2. | Pruebas HTTP/reactivas y revisión de bloqueo; sin `.block()`, `.join()`, `Thread.sleep()` ni SDK síncrono en rutas productivas. | PENDIENTE |
 | T04 | PDF, pp. 3–4 | Persistencia NoSQL para eventos, órdenes e inventario. | DynamoDB por propietario; DynamoDB Local para integración local. | Reinicio con datos persistentes y consultas por claves/índices; modelo y patrones de acceso documentados. | PENDIENTE |
-| T05 | PDF, pp. 4–5 | Mensajería asíncrona; especificación expresa de SQS con entrega al menos una vez. | SQS Standard en AWS; ElasticMQ compatible en local; cuatro colas y cuatro DLQ de consumo. AWS añade una DLQ de entrega Scheduler; expiraciones separadas de compras. | Redelivery tras pérdida de ACK, duplicados, visibilidad, errores transitorios y poison messages. La equivalencia completa con AWS no se presupone. | PENDIENTE |
+| T05 | PDF, pp. 4–5 | Mensajería asíncrona en SQS con entrega al menos una vez. | SQS Standard en AWS y SQS en LocalStack para Compose. Hay cuatro colas y cuatro DLQ de consumo. AWS añade una DLQ de entrega Scheduler. | Redelivery tras pérdida de ACK, duplicados, visibilidad, errores transitorios y poison messages. | PENDIENTE |
 | T06 | PDF, p. 4 | Docker para aplicación y dependencias. | Imágenes fijadas y ejecución por Compose; usuario no root y configuración externa. | Build y arranque desde clon limpio; healthchecks, reinicio y persistencia. | PENDIENTE |
 | T07 | PDF, pp. 4–5 | Clean Architecture con dominio, casos de uso e infraestructura separados. | Estructura generada por scaffold en cada servicio; puertos y dependencias hacia el dominio. | `validateStructure`, ArchUnit y revisión de dependencias; dominio sin Spring ni AWS SDK. | PENDIENTE |
 | T08 | PDF, p. 5 | API completamente reactiva con `Mono` y `Flux`. | Contratos reactivos y cadenas sin trabajo oculto ni buffers ilimitados. | `StepVerifier`, cancelación, propagación de errores, backpressure y pruebas HTTP. | PENDIENTE |
@@ -152,7 +152,7 @@ Los tres gates Sonar, con identificadores asociados al candidato, bloquearán la
 
 ## 10. Límites de la evidencia y cierre
 
-- ElasticMQ se utiliza como alternativa local compatible con la interfaz SQS; los permisos, políticas y comportamiento reales de AWS requieren comprobación en AWS cuando se despliegue.
+- Compose ejecuta SQS en LocalStack. Los permisos, políticas y comportamiento del servicio administrado se verifican al desplegar en AWS.
 - Terraform validado estáticamente no acredita un despliegue exitoso ni capacidad cloud.
 - Los diagramas de AWS representarán diseño propuesto mientras no exista despliegue verificado.
 - El calendario 13–15 de noviembre de 2026 es un desglose nominal de hitos. El trabajo realizado conservará su fecha efectiva y sus resultados reales.

@@ -14,6 +14,8 @@ Los estados pueden coexistir. Las pruebas de desarrollo observadas declaran `dir
 
 ## Resultados observados al revisar
 
+Los reportes SQS de esta sección se generaron con ElasticMQ en las revisiones indicadas. Registrar las ejecuciones del entorno actual con LocalStack por separado.
+
 | Evidencia | Resultado local | Alcance y límite |
 |---|---|---|
 | [Aceptación HTTP y recuperación][acceptance-report] | `containerSmoke`, `integration`, `concurrency`, `recovery`: passed. | La [integración][http-integration] verificó aceptación durable, idempotencia, deadline, ownership, confirmación, cortesía, atomicidad y contadores. |
@@ -55,7 +57,7 @@ La expiración real, las trazas y los paneles tienen ahora evidencia local acota
 | T02 | PDF p.4 | Spring Boot 4.x. | Local verified | [Scaffold y versiones][catalog-settings], [app build][catalog-build]; Boot 4.1.2. |
 | T03 | PDF pp.3–5 | WebFlux y operaciones no bloqueantes. | Local verified | [HTTP reactivo][orders-http], [límites arquitectónicos][architecture-test]. Clientes SDK async/WebClient; falta caracterización bajo carga. |
 | T04 | PDF pp.3–4 | Persistencia NoSQL de eventos, órdenes e inventario. | Local verified / Pending AWS | [Tablas locales][bootstrap], [transacciones Inventory][inventory-db], [Orders][orders-db]. Cada contexto posee su tabla. |
-| T05 | PDF pp.4–5 | SQS asíncrono, entrega al menos una vez. | Local verified / Pending AWS | [Contrato asíncrono][asyncapi], [consumer][inventory-sqs], [sender][inventory-sender]. ElasticMQ no certifica IAM/KMS/SQS real. |
+| T05 | PDF pp.4–5 | SQS asíncrono, entrega al menos una vez. | Implemented / Pending AWS | [Contrato asíncrono][asyncapi], [consumer][inventory-sqs], [sender][inventory-sender]. Compose usa LocalStack. Los reportes de ElasticMQ corresponden al entorno anterior. |
 | T06 | PDF p.4 | Docker en aplicación y dependencias. | Local verified | [Compose][compose], [Dockerfile][dockerfile], [roles efectivos][roles-report]. |
 | T07 | PDF pp.4–5 | Clean Architecture. | Implemented | [Arquitectura][architecture], [tests de límites][architecture-test]. El scaffold conserva dominio, casos de uso, adaptadores y aplicación. |
 | T08 | PDF p.5 | API con Mono/Flux. | Local verified | [Pruebas WebFlux][orders-http], [Inventory HTTP][inventory-http]. |

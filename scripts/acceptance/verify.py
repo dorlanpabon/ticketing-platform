@@ -17,11 +17,11 @@ import xml.etree.ElementTree as ET
 ROOT=Path(__file__).resolve().parents[2]
 URLS={'catalog':'http://127.0.0.1:18080','orders':'http://127.0.0.1:18081','inventory':'http://127.0.0.1:18082'}
 COMPOSE=['docker','compose','-f',str(ROOT/'docker-compose.yml')]
-LOCAL_SQS_ENDPOINT='http://elasticmq:9324'
-INVENTORY_COMMANDS_URL=LOCAL_SQS_ENDPOINT+'/000000000000/inventory-commands'
+LOCAL_SQS_ENDPOINT='http://localstack:4566'
+INVENTORY_COMMANDS_URL=LOCAL_SQS_ENDPOINT+'/queue/us-east-1/000000000000/inventory-commands'
 LOCAL_HOST_ENDPOINTS = {
     'http://dynamodb:8000': 'http://127.0.0.1:18000',
-    LOCAL_SQS_ENDPOINT: 'http://127.0.0.1:19324',
+    LOCAL_SQS_ENDPOINT: 'http://127.0.0.1:4566',
 }
 
 def http(service,path,method='GET',body=None,identity='local-customer-1',key=None):
@@ -185,7 +185,7 @@ def local_inventory_row(partition,sort='META'):
     return local_row('ticketing-local-inventory',partition,sort)
 
 def queue_outage():
-    """Stop the local broker and isolate the API's publication from the relay and consumer."""
+    """Pause LocalStack and isolate the API's publication from the relay and consumer."""
     event_id=event(2)
     key=uuid.uuid4().hex
     table='ticketing-local-orders'
@@ -204,8 +204,11 @@ def queue_outage():
         except (subprocess.CalledProcessError,subprocess.TimeoutExpired):
             return {}
 
+    localstack_paused = False
     try:
-        subprocess.run([*COMPOSE,'stop',*workers,'elasticmq'],check=True,capture_output=True)
+        subprocess.run([*COMPOSE,'stop',*workers],check=True,capture_output=True)
+        subprocess.run([*COMPOSE,'pause','localstack'],check=True,capture_output=True)
+        localstack_paused = True
         status,error=http('orders','/api/v1/orders','POST',{'eventId':event_id,'ticketIds':['1']},actor,key)
         require(status==503 and (error or {}).get('code')=='ORDER_ENQUEUE_UNAVAILABLE',
                 f'Unconfirmed enqueue returned {status}: {error}')
@@ -223,7 +226,8 @@ def queue_outage():
         require(http('orders','/api/v1/orders','POST',{'eventId':event_id,'ticketIds':['2']},actor,key)[0]==409,
                 'Conflicting idempotency payload was accepted during the outage')
 
-        subprocess.run([*COMPOSE,'up','-d','--no-deps','elasticmq'],check=True,capture_output=True)
+        subprocess.run([*COMPOSE,'unpause','localstack'],check=True,capture_output=True)
+        localstack_paused = False
         eventually(queue_ready,lambda result:bool(result.get('Attributes',{}).get('QueueArn')),timeout=60)
         retry_attempts = 0
 
@@ -246,8 +250,12 @@ def queue_outage():
         require(any(json.loads(message['Body'])==envelope for message in messages.get('Messages',[])),
                 'API returned 202 with the workers stopped, but the original command was missing from SQS')
     finally:
-        subprocess.run([*COMPOSE,'up','-d','--no-deps','--wait','--wait-timeout','180',
-                        *scale,'elasticmq',*workers],check=True,capture_output=True)
+        try:
+            if localstack_paused:
+                subprocess.run([*COMPOSE,'unpause','localstack'],check=True,capture_output=True)
+        finally:
+            subprocess.run([*COMPOSE,'up','-d','--no-deps','--wait','--wait-timeout','180',
+                            *scale,*workers],check=True,capture_output=True)
     held=order(order_id,'AWAITING_CONFIRMATION',timeout=120)
     require(held['expiresAt']==stored['expiresAt'],'Consumer recovery changed the initial deadline')
     return {'eventId':event_id,'orderId':order_id,'messageId':message_id,'outageStatus':503,'retryStatus':202,

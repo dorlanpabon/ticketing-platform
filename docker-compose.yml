@@ -11,28 +11,32 @@ x-app: &app
   cpus: 1.0
   depends_on:
     bootstrap: {condition: service_completed_successfully}
+    localstack: {condition: service_healthy}
   networks: [ticketing]
   stop_grace_period: 30s
   logging:
     driver: json-file
     options: {max-size: 10m, max-file: '3'}
 
+x-aws-environment: &aws-environment
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: localemulator
+  AWS_SECRET_ACCESS_KEY: localemulator
+
 x-environment: &environment
+  <<: *aws-environment
   APP_ENV: local
   APP_ROLE: api
   API_ENABLED: 'true'
   WORKERS_ENABLED: 'false'
   SPRING_PROFILES_ACTIVE: local
   AUTH_MODE: local
-  AWS_REGION: us-east-1
-  AWS_DEFAULT_REGION: us-east-1
-  AWS_ACCESS_KEY_ID: localemulator
-  AWS_SECRET_ACCESS_KEY: localemulator
   DYNAMODB_ENDPOINT: http://dynamodb:8000
-  SQS_ENDPOINT: http://elasticmq:9324
-  INVENTORY_COMMANDS_QUEUE_URL: http://elasticmq:9324/000000000000/inventory-commands
-  ORDER_EVENTS_QUEUE_URL: http://elasticmq:9324/000000000000/order-events
-  CATALOG_EVENTS_QUEUE_URL: http://elasticmq:9324/000000000000/catalog-events
+  SQS_ENDPOINT: &sqs-endpoint http://localstack:4566
+  INVENTORY_COMMANDS_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/inventory-commands
+  ORDER_EVENTS_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/order-events
+  CATALOG_EVENTS_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/catalog-events
   INVENTORY_BASE_URL: http://inventory:8080
   CATALOG_BASE_URL: http://catalog:8080
 
@@ -53,22 +57,40 @@ services:
     mem_limit: 512m
     restart: unless-stopped
 
-  elasticmq:
-    image: softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c
-    ports: ['127.0.0.1:19324:9324']
+  localstack:
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+    ports: ['127.0.0.1:4566:4566']
+    environment:
+      <<: *aws-environment
+      SERVICES: sqs
+      LOCALSTACK_HOST: localstack:4566
+      SQS_ENDPOINT_STRATEGY: path
+      SQS_DISABLE_CLOUDWATCH_METRICS: '1'
     volumes:
-      - ./config/local/elasticmq.conf:/opt/elasticmq.conf:ro
-      - elasticmq-data:/data
+      - ./scripts/local/init-sqs.py:/etc/localstack/init/ready.d/init-sqs.py:ro
     networks: [ticketing]
-    mem_limit: 256m
+    mem_limit: 768m
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, sys, urllib.request;
+          ready = json.load(urllib.request.urlopen('http://127.0.0.1:4566/_localstack/init/ready', timeout=2));
+          sys.exit(not (ready['completed'] and any(script['name'] == 'init-sqs.py' and script['state'] == 'SUCCESSFUL' for script in ready['scripts'])))
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 18
 
   bootstrap:
     image: &aws-cli-image amazon/aws-cli:2.31.22@sha256:bf253be91e12d49ba1bd6dc939a76ea9777901772032692b14639e643118e1c1
     entrypoint: [/bin/sh, /bootstrap/bootstrap.sh]
     environment: *environment
     volumes: ['./scripts/local:/bootstrap:ro']
-    depends_on: [dynamodb, elasticmq]
+    depends_on: [dynamodb]
     networks: [ticketing]
     restart: 'no'
 
@@ -77,16 +99,14 @@ services:
     init: true
     entrypoint: [/bin/sh, /bootstrap/recovery-tick.sh]
     environment:
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: localemulator
-      AWS_SECRET_ACCESS_KEY: localemulator
+      <<: *aws-environment
       AWS_PAGER: ''
       AWS_MAX_ATTEMPTS: '2'
-      SQS_ENDPOINT: http://elasticmq:9324
-      INVENTORY_EXPIRATIONS_QUEUE_URL: http://elasticmq:9324/000000000000/inventory-expirations
+      SQS_ENDPOINT: *sqs-endpoint
+      INVENTORY_EXPIRATIONS_QUEUE_URL: &expiration-queue http://localstack:4566/queue/us-east-1/000000000000/inventory-expirations
     volumes: ['./scripts/local:/bootstrap:ro']
     depends_on:
-      bootstrap: {condition: service_completed_successfully}
+      localstack: {condition: service_healthy}
     read_only: true
     tmpfs: ['/tmp:size=16m,mode=1777']
     cap_drop: [ALL]
@@ -131,7 +151,7 @@ services:
     environment:
       <<: *environment
       DYNAMODB_TABLE_NAME: ticketing-local-inventory
-      INVENTORY_EXPIRATIONS_QUEUE_URL: http://elasticmq:9324/000000000000/inventory-expirations
+      INVENTORY_EXPIRATIONS_QUEUE_URL: *expiration-queue
       LOCAL_RECOVERY_ENABLED: 'false'
 
   catalog-worker:
@@ -157,7 +177,7 @@ services:
     environment:
       <<: *worker-environment
       DYNAMODB_TABLE_NAME: ticketing-local-inventory
-      INVENTORY_EXPIRATIONS_QUEUE_URL: http://elasticmq:9324/000000000000/inventory-expirations
+      INVENTORY_EXPIRATIONS_QUEUE_URL: *expiration-queue
       LOCAL_RECOVERY_ENABLED: 'false'
 
   sonar-db:
@@ -198,7 +218,6 @@ networks:
   quality: {}
 volumes:
   dynamodb-data: {}
-  elasticmq-data: {}
   sonar-db: {}
   sonar-data: {}
   sonar-extensions: {}

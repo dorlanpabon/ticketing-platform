@@ -91,6 +91,6 @@ Los resultados se escriben en `evidence/local/performance/<fecha-UTC>-<id>/`, ex
 
 Los recursos del generador forman parte del resultado: saturarlo puede limitar la carga. Una ejecución con working tree sucio identifica las imágenes locales reales y no se presenta como validación de un commit cerrado. `validate` produce únicamente `configuration-validated-without-application-traffic`, nunca un benchmark aprobado.
 
-Para el informe final, adjuntar recursos, escenario, seed, dataset, duración real, VUs, requests/s, p95/p99, errores técnicos, rechazos de negocio, pendientes, invariantes, OOM y evolución de memoria. Verificar una ventana sostenida y la pendiente de memoria con las muestras; un máximo aislado no demuestra estabilidad ni fuga. Las mediciones de DynamoDB Local/ElasticMQ no prueban capacidad, costo, IAM ni rendimiento AWS.
+Para el informe final, adjuntar recursos, escenario, seed, dataset, duración real, VUs, requests/s, p95/p99, errores técnicos, rechazos de negocio, pendientes, invariantes, OOM y evolución de memoria. Evaluar estabilidad y fugas con la serie completa de memoria durante una ventana sostenida. Las mediciones con DynamoDB Local y SQS en LocalStack se limitan al entorno de desarrollo.
 
 El runner deja `memoryStabilityAssessed=false`: su estado `passed` indica umbrales k6 y auditoría funcional aprobados, no una certificación automática de estabilidad de memoria. Esa evaluación requiere analizar la serie temporal y documentar el criterio usado.

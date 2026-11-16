@@ -13,7 +13,7 @@ class SqsClientConfigTest {
         var config = new SqsClientConfig();
         var metrics = mock(MetricPublisher.class);
         try (
-            var local = config.sqsAsyncClient("us-east-1", new SqsClientProperties("http://localhost:19324"),
+            var local = config.sqsAsyncClient("us-east-1", new SqsClientProperties("http://localhost:4566"),
                 metrics);
             var aws = config.sqsAsyncClient("us-east-1", new SqsClientProperties(""), metrics);
             var absent = config.sqsAsyncClient("us-east-1", new SqsClientProperties(null), metrics)) {

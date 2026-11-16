@@ -186,7 +186,7 @@ Los reportes deberán indicar fecha, entorno y versión. Si se publica una captu
 ## 7. Límites que se deben declarar
 
 1. **AWS preparado no significa AWS probado.** Si no se ejecutó `apply` y una validación real, presentar Terraform como desplegable y analizado estáticamente.
-2. **Emulación no equivale a servicio administrado.** DynamoDB Local y ElasticMQ ayudan a probar integración y recuperación, pero no certifican IAM, cuotas, latencias, redrive ni todos los casos de AWS.
+2. **Alcance de las pruebas locales.** DynamoDB Local y LocalStack permiten probar integración y recuperación. IAM, cuotas, latencias y redrive administrado se comprueban en AWS.
 3. **Community tiene una sola rama de análisis.** El historial Sonar se alimenta exclusivamente de `develop`. No se promete decoración ni análisis nativo de todas las PR.
 4. **Diez minutos son un deadline de negocio.** El worker puede tardar en materializar la liberación. Explicar la comprobación de vencimiento, la recuperación y el objetivo de atraso.
 5. **No hay pagos ni ingresos monetarios modelados.** Se demuestra la diferencia entre cantidad vendida, reservada y cortesía; no una integración bancaria.

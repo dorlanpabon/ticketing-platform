@@ -102,12 +102,12 @@ La autenticación local `Bearer local-customer-1`, `local-customer-2` o `local-a
 |---|---|---|
 | Proceso | Docker Compose, tres imágenes y seis roles. | ECS Fargate, API/worker escalables por separado. |
 | Datos | DynamoDB Local, tabla por contexto. | DynamoDB on-demand, KMS; PITR en QA/PROD. |
-| Mensajería | ElasticMQ; pruebas del flujo que implementa el emulador. | SQS Standard con cifrado, redrive, DLQ y alarmas. |
+| Mensajería | SQS en LocalStack con una DLQ por cola. | SQS Standard con cifrado, redrive, DLQ y alarmas. |
 | Recuperación de vencimientos | Un contenedor expiry-recovery publica SweepExpiredReservations. | EventBridge Scheduler → SQS con retry acotado y DLQ propia. |
 | Identidad | Identidades locales de prueba. | Cognito + autorización JWT, claims y ownership. |
 | Operación | Logs/health y evidencia de los scripts locales. | CloudWatch, métricas SQS/API Gateway, filtros de logs y alarmas. |
 
-Pasar una prueba con ElasticMQ no demuestra permisos IAM, consistencia del servicio real, comportamiento de KMS, latencia AWS o cumplimiento de cuotas. Las pruebas Terraform simulan el provider y ejecutan planes; no constituyen un despliegue.
+Las pruebas con LocalStack verifican la mensajería emulada. IAM, KMS, consistencia, latencia y cuotas de AWS requieren pruebas en AWS. Las pruebas Terraform simulan el proveedor y ejecutan planes.
 
 Los workers emiten logs estructurados con campos `metric` y `value`: `outbox_age_seconds` por contexto y `expiration_lag_seconds` en Inventory. Terraform configura filtros en los log groups de workers. La verificación de stdout local y la recepción/alarma efectiva en CloudWatch son evidencias distintas; el despliegue cloud y esa última comprobación permanecen pendientes de autorización.
 

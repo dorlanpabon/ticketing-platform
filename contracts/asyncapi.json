@@ -1146,9 +1146,9 @@
   },
   "servers": {
     "local": {
-      "host": "localhost:19324",
+      "host": "localhost:4566",
       "protocol": "sqs",
-      "description": "ElasticMQ HTTP endpoint from the host. Containers use http://elasticmq:9324. Account path is 000000000000; full queue URLs are supplied in environment variables."
+      "description": "LocalStack SQS endpoint from the host. Containers use http://localstack:4566. Queue URLs use /queue/us-east-1/000000000000/<queue> and are supplied in environment variables."
     },
     "aws": {
       "host": "sqs.{region}.amazonaws.com",

@@ -1,4 +1,4 @@
-"""Restart only this Compose project's emulators and verify isolated durable fixtures."""
+"""Check DynamoDB Local restart durability and LocalStack SQS message delivery."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -19,7 +19,7 @@ def run(arguments):
 
 
 def aws(service, *arguments):
-    endpoint = {'dynamodb': 'http://dynamodb:8000', 'sqs': 'http://elasticmq:9324'}[service]
+    endpoint = {'dynamodb': 'http://dynamodb:8000', 'sqs': 'http://localstack:4566'}[service]
     raw = run([*COMPOSE, 'run', '--rm', '--no-deps', '--entrypoint', 'aws', 'bootstrap',
                '--endpoint-url', endpoint, service, *arguments, '--output', 'json'])
     return json.loads(raw or '{}')
@@ -39,7 +39,7 @@ def main():
                 'workingTreeDirty': bool(run(['git', 'status', '--porcelain'])),
                 'environment': 'local-emulators', 'status': 'failed'}
     try:
-        for service in ('dynamodb', 'elasticmq'):
+        for service in ('dynamodb', 'localstack'):
             if not run([*COMPOSE, 'ps', '-q', service]):
                 raise RuntimeError('Start this project before testing persistence')
         aws('dynamodb', 'create-table', '--table-name', table,
@@ -47,14 +47,11 @@ def main():
             '--key-schema', 'AttributeName=pk,KeyType=HASH', '--billing-mode', 'PAY_PER_REQUEST')
         created_table = True
         aws('dynamodb', 'put-item', '--table-name', table, '--item', key)
-        queue_url = aws('sqs', 'create-queue', '--queue-name', table)['QueueUrl']
-        sent = aws('sqs', 'send-message', '--queue-url', queue_url, '--message-body', identifier)
-        run([*COMPOSE, 'restart', 'dynamodb', 'elasticmq'])
+        run([*COMPOSE, 'restart', 'dynamodb'])
         deadline = time.monotonic() + 90
         while True:
             try:
                 saved = aws('dynamodb', 'get-item', '--table-name', table, '--key', key, '--consistent-read')
-                received = aws('sqs', 'receive-message', '--queue-url', queue_url, '--wait-time-seconds', '1')
                 break
             except RuntimeError:
                 if time.monotonic() >= deadline:
@@ -62,11 +59,14 @@ def main():
                 time.sleep(1)
         if saved.get('Item', {}).get('pk', {}).get('S') != identifier:
             raise AssertionError('DynamoDB item did not survive restart')
+        queue_url = aws('sqs', 'create-queue', '--queue-name', table)['QueueUrl']
+        sent = aws('sqs', 'send-message', '--queue-url', queue_url, '--message-body', identifier)
+        received = aws('sqs', 'receive-message', '--queue-url', queue_url, '--wait-time-seconds', '2')
         messages = received.get('Messages', [])
         if not any(item.get('Body') == identifier and item.get('MessageId') == sent['MessageId'] for item in messages):
-            raise AssertionError('SQS message/identity did not survive restart')
-        document.update(status='passed', dynamodbItemPreserved=True, sqsMessagePreserved=True,
-                        scope='One isolated table/item and queue/message; no AWS compatibility claim')
+            raise AssertionError('LocalStack SQS did not deliver the isolated message')
+        document.update(status='passed', dynamodbItemPreserved=True, sqsMessageDelivered=True,
+                        scope='DynamoDB Local restart and LocalStack SQS send/receive')
     except Exception as error:
         document['error'] = str(error)
     finally:

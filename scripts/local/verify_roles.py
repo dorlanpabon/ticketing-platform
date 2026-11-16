@@ -76,8 +76,8 @@ def expiration_recovery_contract() -> dict:
     if publisher["State"].get("Health", {}).get("Status") != "healthy":
         raise RuntimeError("Local recovery publisher has not sent a healthy tick")
     result = run(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "aws", "bootstrap",
-                  "sqs", "get-queue-attributes", "--endpoint-url", "http://elasticmq:9324",
-                  "--queue-url", "http://elasticmq:9324/000000000000/inventory-expirations",
+                  "sqs", "get-queue-attributes", "--endpoint-url", "http://localstack:4566",
+                  "--queue-url", "http://localstack:4566/queue/us-east-1/000000000000/inventory-expirations",
                   "--attribute-names", "RedrivePolicy", "VisibilityTimeout", "ReceiveMessageWaitTimeSeconds"])
     attributes = json.loads(result.stdout)["Attributes"]
     redrive = json.loads(attributes["RedrivePolicy"])

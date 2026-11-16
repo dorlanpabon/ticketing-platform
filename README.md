@@ -38,21 +38,22 @@ Requires Docker Compose. Run `docker compose up --build --wait` from this reposi
 
 Each context runs as two independent processes using the same image: an HTTP API and an asynchronous worker. APIs set `APP_ROLE=api`, `API_ENABLED=true`, `WORKERS_ENABLED=false`; workers invert those flags and have no published host ports. Worker HTTP business routes return 404 while readiness and Prometheus remain available. Runtime flags complement network/IAM isolation; they do not replace it.
 
-Run `python scripts/acceptance/verify.py --allow-dirty --checks queueOutage` against this local stack to verify recovery with the same idempotency key. The check temporarily stops ElasticMQ and the Orders and Inventory workers, then restores them.
+Run `python scripts/acceptance/verify.py --allow-dirty --checks queueOutage` against this local stack to verify recovery with the same idempotency key. The check pauses LocalStack and stops the Orders and Inventory workers, then restores them.
 
 Scale consumers independently with `docker compose up -d --wait --scale inventory-worker=2` (also supported for `catalog-worker` and `orders-worker`). Conditional DynamoDB writes, inbox deduplication and outbox leases coordinate replicas. Run `python scripts/local/verify_roles.py --min-inventory-workers 2` to record actual runtime identities and probe evidence. This verifies role isolation and replica readiness; the concurrency/recovery acceptance suite separately verifies business correctness.
 
-The default six JVMs are capped at 512 MiB each with a 70% maximum heap; DynamoDB and ElasticMQ add 768 MiB. Sonar is optional and needs up to 3 GiB plus PostgreSQL. On an 8 GiB Docker VM, stop the quality profile before scaling workers or running parallel image builds. The infrastructure repository scales the six ECS services independently and reuses three approved image digests.
+The default six JVMs are capped at 512 MiB each with a 70% maximum heap. DynamoDB Local and LocalStack run in separate containers with their own resource limits. Sonar is optional and needs up to 3 GiB plus PostgreSQL. On an 8 GiB Docker VM, stop the quality profile before scaling workers or running parallel image builds. The infrastructure repository scales the six ECS services independently and reuses three approved image digests.
 
 | Service | Local URL |
 |---|---|
 | Catalog | `http://localhost:18080` |
 | Orders | `http://localhost:18081` |
 | Inventory | `http://localhost:18082` |
+| LocalStack SQS | `http://localhost:4566` |
 
 Local HTTP requests use `Authorization: Bearer local-customer-1`, `local-customer-2`, or `local-admin`. These synthetic identities work only with the local authentication mode/profile. AWS uses JWT validation at the API gateway and application ownership/role checks.
 
-The local profile uses DynamoDB Local and ElasticMQ with persistent volumes. These are development emulators. Passing local tests does not prove IAM behavior or complete AWS service compatibility. No business fixtures are inserted or overwritten on restart.
+The local profile uses DynamoDB Local for tables and LocalStack Community exclusively for SQS. Queue initialization creates four queues and their dead-letter queues before the APIs and workers start. DynamoDB Local keeps its tables in a named volume. LocalStack keeps messages in memory and recreates empty queues on restart. Business fixtures are created explicitly by the acceptance scripts. AWS IAM, KMS and service limits require AWS verification.
 
 Expiration uses a delayed `ExpireReservation` message per held reservation in the dedicated `inventory-expirations` queue, with a separate DLQ. A single lightweight `expiry-recovery` container sends `SweepExpiredReservations` every minute for recovery through the same queue and consumer path. It is a local publisher, not an EventBridge emulator. AWS uses EventBridge Scheduler; workers do not run a local sweep schedule in Compose. The business deadline remains the original `expiresAt`, even during delivery or consumer delays.
 

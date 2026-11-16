@@ -21,9 +21,9 @@ curl.exe --fail http://localhost:18082/actuator/health/readiness
 | Orders API | `http://localhost:18081` |
 | Inventory API | `http://localhost:18082` |
 | DynamoDB Local | `http://localhost:18000` |
-| ElasticMQ | `http://localhost:19324` |
+| LocalStack SQS | `http://localhost:4566` |
 
-Los puertos publicados se vinculan a loopback. Los workers no publican puertos de host ni atienden rutas de negocio; conservan health y Prometheus. `bootstrap` crea tablas/índices/colas y configura redrive sin reemplazar datos de negocio. Esperar su terminación exitosa, no iniciar APIs sobre una inicialización fallida. `expiry-recovery` debe ser **una sola instancia**: publica el mensaje periódico; los consumers coordinan su ejecución mediante lease durable.
+Los puertos publicados se vinculan a loopback. Los workers mantienen los puertos de health y Prometheus en la red interna. La inicialización crea tablas e índices, además de las colas SQS y sus DLQ, antes de levantar las APIs y los workers. Una sola instancia de `expiry-recovery` publica el mensaje periódico. Los consumers coordinan su ejecución mediante un lease durable.
 
 Identidades de prueba: `Authorization: Bearer local-customer-1`, `local-customer-2` o `local-admin`. Solo funcionan con perfil `local` y `AUTH_MODE=local`. No son JWT ni credenciales cloud. Los valores AWS sintéticos de Compose permiten firmar solicitudes a emuladores; no dan acceso a AWS. Los ejemplos funcionales están en [Postman](../contracts/ticketing.postman_collection.json) y [OpenAPI](../contracts/openapi.json). Confirmar una orden es una operación explícita independiente de crearla; `202` no demuestra que ya esté reservada o vendida.
 
@@ -81,20 +81,22 @@ docker compose logs --since 10m --tail 100 inventory-worker orders-worker catalo
 
 No incrementar `requestedAt`/`expiresAt`, editar estados finales ni borrar idempotencia para forzar recuperación. Una orden cuyo deadline pasó debe terminar expirada/rechazada, aunque antes no hubiera llegado a Inventory. Si las dependencias también cayeron, usar `docker compose up -d --wait` para restaurarlas antes de reanudar comprobaciones.
 
+`queueOutage` pausa LocalStack para simular la pérdida de conectividad y conservar el estado de la cola durante la prueba. Si una interrupción deja el servicio en estado `Paused`, ejecutar `docker compose unpause localstack` antes de restaurar los workers. Un reinicio de LocalStack Community vuelve a crear colas vacías.
+
 `docker compose stop` conserva contenedores y volúmenes; `docker compose down` elimina contenedores/red pero conserva los volúmenes nombrados. No usar `down -v`, purgar colas o borrar tablas como solución de un incidente: destruye evidencia, reservas, outbox e idempotencia. No hay procedimiento automatizado de backup/restauración local certificado; una copia consistente exige detener escritores y respaldar conjuntamente los volúmenes. AWS PITR y recuperación regional requieren ensayo independiente descrito en el repositorio de infraestructura.
 
-### Probe de persistencia de emuladores
+### Probe de persistencia de DynamoDB y entrega SQS
 
-El script [verify_persistence.py](../scripts/local/verify_persistence.py) requiere una ventana exclusiva: reinicia DynamoDB Local y ElasticMQ, por lo que interrumpe temporalmente dependencias de todas las APIs/workers. No ejecutarlo durante la prueba de diez minutos, Newman, observabilidad, concurrencia o carga.
+El script [verify_persistence.py](../scripts/local/verify_persistence.py) requiere una ventana exclusiva porque reinicia DynamoDB Local. Ejecutarlo con las pruebas de aceptación y carga detenidas.
 
 ```powershell
 python scripts/local/verify_persistence.py --output build/quality/persistence.json
 docker compose ps
 ```
 
-El probe crea una tabla y una cola con nombres únicos `ticketing-persistence-<uuid>`, escribe un ítem y un mensaje, ejecuta `docker compose restart dynamodb elasticmq`, espera recuperación y comprueba ítem/body/MessageId conservados. Su limpieza elimina exclusivamente la tabla/cola creadas por esa invocación; un fallo de limpieza deja el resultado fallido. No borra volúmenes ni purga colas de negocio.
+El probe crea una tabla y una cola con nombres únicos `ticketing-persistence-<uuid>`. Escribe un ítem, ejecuta `docker compose restart dynamodb` y verifica que el ítem sigue en la tabla. Luego envía y recibe un mensaje de prueba a través de LocalStack y comprueba su cuerpo y `MessageId`. La limpieza elimina exclusivamente la tabla y la cola creadas por esa invocación.
 
-El alcance es un reinicio de contenedores con volúmenes existentes, no recreación de toda la plataforma, respaldo/restauración, crash por pérdida de disco ni recuperación AWS. Incluso si pasa, no demuestra que todas las ventas/órdenes sobrevivan cualquier desastre. Conservar `persistence.json` con SHA, workingTreeDirty, fechas y alcance; verificar salud de APIs/workers antes de comenzar otra prueba. Una interrupción forzada puede dejar los recursos aislados del probe para inspección; no usar una limpieza global para retirarlos.
+El alcance de persistencia es un reinicio de DynamoDB Local con el volumen existente. La entrega SQS se comprueba con LocalStack activo. Conservar `persistence.json` con SHA, workingTreeDirty, fechas y alcance. Si se interrumpe la prueba, inspeccionar exclusivamente los recursos identificados en su reporte antes de retomar la limpieza.
 
 La ejecución local del 2026-11-16, 10:07:09–10:07:36 UTC, terminó `passed`: ítem y mensaje preservados, sin fallos de limpieza reportados. [persistence-dev.json](../build/quality/persistence-dev.json) referencia HEAD `6debcf20f1e52b6f2f9c36008c6682a2b9fc953b` con `workingTreeDirty=true`; es evidencia de desarrollo con el alcance limitado anterior, no un restore certificado ni aprobación del commit final.
 
@@ -131,7 +133,7 @@ Hay cuatro colas principales y cuatro DLQ de consumo: `inventory-commands`, `inv
 2. Corregir dependencia, permisos o incompatibilidad del consumer. Un contrato inválido no se arregla con replays repetidos.
 3. Elegir muestra acotada y preservar **todo el envelope de aplicación**, IDs, versiones, requestedAt y expiresAt. El transporte puede asignar otro ID SQS; no debe cambiar el ID estable del envelope.
 4. En AWS, usar el redrive administrado de la DLQ a su cola origen solo con permisos/autorización operativa y velocidad limitada. Confirmar compatibilidad KMS y observar errores. No se ha verificado redrive AWS en esta entrega.
-5. ElasticMQ no se presume equivalente a todas las APIs AWS de redrive. Para un replay manual local, recibir un mensaje, enviar su body sin modificar a la cola origen y borrar el receipt de la DLQ **solo después** de publicación confirmada. La recepción cambia visibilidad; guardar el original en un archivo privado fuera de Git antes de intervenir.
+5. Para un replay manual en LocalStack, recibir un mensaje, enviar su cuerpo íntegro a la cola origen y borrar el recibo de la DLQ **solo después** de confirmar la publicación. La recepción cambia la visibilidad. Guardar el mensaje original en un archivo privado fuera de Git antes de intervenir.
 6. Verificar que el efecto se aplicó una vez o fue un no-op legítimo; un comando vencido debe rechazar/liberar, nunca conceder otro plazo. No “solucionar” el rechazo creando IDs nuevos en un mensaje antiguo.
 
 La DLQ de Scheduler diagnostica fallos de entrega a SQS, no fallos de negocio de Inventory. Examinar su formato y atributos antes de reenvío; no asumir que su body es idéntico a un envelope de una DLQ de consumo. El siguiente tick válido puede recuperar el trabajo indexado; un tick no representa una reserva individual.

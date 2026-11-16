@@ -10,9 +10,9 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.web.reactive.function.client.WebClient;
 
 @SpringBootTest(properties = { "spring.profiles.active=local", "AUTH_MODE=local", "workers.enabled=false",
-    "DYNAMODB_ENDPOINT=http://localhost:18000", "SQS_ENDPOINT=http://localhost:19324",
-    "ORDER_EVENTS_QUEUE_URL=http://localhost:19324/000000000000/order-events",
-    "INVENTORY_COMMANDS_QUEUE_URL=http://localhost:19324/000000000000/inventory-commands",
+    "DYNAMODB_ENDPOINT=http://localhost:18000", "SQS_ENDPOINT=http://localhost:4566",
+    "ORDER_EVENTS_QUEUE_URL=http://localhost:4566/queue/us-east-1/000000000000/order-events",
+    "INVENTORY_COMMANDS_QUEUE_URL=http://localhost:4566/queue/us-east-1/000000000000/inventory-commands",
     "INVENTORY_BASE_URL=http://localhost:18083" })
 class ApplicationContextTest {
     @Autowired
