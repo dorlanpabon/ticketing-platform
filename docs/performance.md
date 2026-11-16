@@ -8,7 +8,7 @@ Este documento define cómo medir la implementación local. La existencia de scr
 |---|---:|---:|---:|---:|---|
 | smoke | 50 | 30 s | 20 requests/s | 1 evento de 2000 entradas; otro de 1 cuando aplica | 1 CPU, 512 MiB |
 | full | 1000 | 1800 s | 100 requests/s | 1 evento de 100000 entradas; otro de 1 cuando aplica | 2 CPU, 1536 MiB |
-| cohort | 100 o 1000 | Un intento por VU; máximo 120 s | Ráfaga explícita, sin pacing | Un evento de 1 entrada | Límites configurados del perfil |
+| cohort | 100 o 1000 | Un intento por VU; máximo 120 s | Ráfaga explícita, sin pacing | Un evento de N entradas; N=1 por defecto | Límites configurados del perfil |
 
 `smoke` es el predeterminado. `full` requiere `PERF_FULL=1`; la ráfaga `cohort` requiere `PERF_STRESS=1`. Los límites máximos del runner son 1000 VUs, 1800 s, 1000 requests/s de presupuesto y 4 GiB/4 CPU para el generador. El modo sin argumento es `plan`: no ejecuta carga.
 
@@ -24,7 +24,9 @@ Se alternan las dos identidades de cliente locales entre VUs. Se simulan sesione
 | distributed | Comprar entradas distintas, observar reserva, confirmar y observar SOLD. | Selección sin reutilización entre VUs; agotamiento del dataset falla explícitamente. |
 | hotseat | Competir reiteradamente por una entrada y confirmar al ganador. | Exactamente una venta observada; rechazos se contabilizan por separado. |
 | mixed | Aproximadamente 80 % lecturas, 15 % compras distribuidas y 5 % competencia por una entrada. | Señales técnicas, de negocio, async e invariantes separadas. |
-| cohort | Una compra por cada VU, sincronizada mediante hora de inicio; no confirma ni vuelve a comprar. | Audita todos los pedidos y la disponibilidad autoritativa: exactamente una reserva, resto rechazado y ningún resultado pendiente. |
+| cohort | Una compra por cada VU, sincronizada mediante hora de inicio; no confirma ni vuelve a comprar. | Audita todos los pedidos y cada entrada autoritativa: exactamente N reservas, un ganador único por entrada, resto rechazado y ningún resultado pendiente. |
+
+`--cohort-tickets N` configura la capacidad de la cohorte entre 1 y el número de VUs; el valor predeterminado sigue siendo 1. Para 1000 VUs y 100 entradas se asignan diez intentos a cada entrada y se exigen 100 reservas ganadoras únicas, 900 compradores rechazados y `SOLD=0`. Es una prueba de reservas concurrentes, no de mil ventas completadas.
 
 La distribución usa semilla `20261116` por defecto; `--seed` cambia el patrón de operaciones y el desplazamiento de asientos. Cada VU posee una secuencia exclusiva de asientos para distributed. Cambiar VUs, semilla, capacidad o cantidad de eventos cambia el experimento y queda registrado. La semilla no hace determinista el scheduling de red ni los UUID generados por la aplicación.
 
@@ -46,14 +48,16 @@ python scripts/performance/run.py run --scenario mixed
 
 $env:PERF_STRESS = '1'
 python scripts/performance/run.py run --scenario cohort --vus 100
-python scripts/performance/run.py run --scenario cohort --vus 1000 --generator-memory-mib 1536 --generator-cpus 2
+python scripts/performance/run.py run --scenario cohort --vus 1000 --cohort-tickets 100 --generator-memory-mib 1536 --generator-cpus 2
 Remove-Item Env:PERF_STRESS
 
 $env:PERF_FULL = '1'
-python scripts/performance/run.py plan --profile full --scenario mixed
-python scripts/performance/run.py run --profile full --scenario mixed
+python scripts/performance/run.py plan --profile full --scenario mixed --max-rps 500 --events 2 --capacity 100000
+python scripts/performance/run.py run --profile full --scenario mixed --max-rps 500 --events 2 --capacity 100000
 Remove-Item Env:PERF_FULL
 ```
+
+El ejemplo full fija antes del tráfico 1000 VUs durante 1800 s, presupuesto de 500 requests/s y dos eventos de 100000 entradas cada uno, además del evento caliente de una entrada. El generador conserva los valores full de 2 CPU y 1536 MiB. El runner mantiene **100 requests/s como valor predeterminado**: 500 es una elección explícita de este experimento, no un cambio de defaults ni de umbrales.
 
 Las variantes `read`, `distributed` y `hotseat` también admiten `--profile full`. No ejecutar todas simultáneamente. El runner limita duración, CPU y memoria del generador y conserva exit code/OOM. En una VM de 8 GiB, un experimento de mil VUs puede no completar o no alcanzar los objetivos; ese resultado se registra como fallo o incompleto, sin convertirlo en éxito por cambiar el umbral después.
 
@@ -67,13 +71,13 @@ Las variantes `read`, `distributed` y `hotseat` también admiten `--profile full
 | Respuestas técnicas inesperadas | <1 %. HTTP 409/410 de negocio se separan. |
 | Respuesta inválida, resultado async sin resolver o dataset agotado | Cero. |
 | Invariante de inventario | Cero violaciones en muestras y auditoría posterior. |
-| Cohort | Exactamente un ganador y todos los demás intentos resueltos/rechazados. |
+| Cohort | Exactamente N reservas ganadoras únicas, una por entrada; todos los demás compradores rechazados y ninguna venta. |
 
-El presupuesto de pacing también aplica a las consultas de seguimiento. Con 1000 VUs y 100 requests/s, el intervalo por VU es de 10 s: la latencia de SOLD observado incluye esa espera y no permite atribuir todo el retraso al backend. Puede fallar el objetivo de 5 s aun si el cambio durable ocurrió antes. Ese dato se conserva; para aislar latencia backend hace falta un observador independiente o trazas correlacionadas, y otro experimento con presupuesto explícito. No se descuentan tiempos de forma especulativa.
+El presupuesto de pacing también aplica a las consultas de seguimiento. Con 1000 VUs y 100 requests/s, el intervalo por VU es de 10 s: la latencia de SOLD observado incluye esa espera y no permite atribuir todo el retraso al backend. Puede fallar el objetivo de 5 s aun si el cambio durable ocurrió antes. El experimento explícito de 500 requests/s reduce ese intervalo a 2 s, conservando el objetivo de 5 s y contabilizando la espera de observación. Esto no garantiza el percentil ni significa que se alcancen 500 requests/s reales. Para aislar latencia backend hace falta un observador independiente o trazas correlacionadas. No se descuentan tiempos de forma especulativa.
 
 Los 202 que después se rechazan por inventario no se suman como error técnico. Se reportan `business_rejections` por fase y `async_unresolved` cuando no se conoce el resultado a tiempo. La confirmación medida no equivale a un pago externo; esta prueba no integra una pasarela de pagos.
 
-La auditoría general comprueba `capacity = available + reserved + pendingConfirmation + sold + complimentary` y valores no negativos. Esa invariante es necesaria, pero por sí sola no demuestra unicidad de cada comprador. La cohorte añade auditoría de todos sus pedidos, un ganador y disponibilidad autoritativa; la suite de aceptación complementa la evidencia de transacciones, idempotencia y concurrencia.
+La auditoría general comprueba `capacity = available + reserved + pendingConfirmation + sold + complimentary` y valores no negativos. Esa invariante es necesaria, pero por sí sola no demuestra unicidad de cada comprador. La cohorte añade auditoría de todos sus pedidos, un ganador único por cada una de las N entradas, lectura paginada de entradas y disponibilidad autoritativa; la suite de aceptación complementa la evidencia de transacciones, idempotencia y concurrencia.
 
 ## Artefactos por ejecución
 
@@ -83,7 +87,7 @@ Los resultados se escriben en `evidence/local/performance/<fecha-UTC>-<id>/`, ex
 - `dataset.json`: IDs reales de eventos, capacidad, semilla y hora coordinada de cohorte. Nunca contiene contraseñas o tokens Cognito.
 - `summary.json`: métricas originales de k6, incluidos percentiles y conteos. No se sustituyen percentiles sin observaciones por cero; una ejecución sin requests o iteraciones completadas no pasa.
 - `resources.jsonl`: muestras de CPU, memoria, red, disco y PIDs reportadas por Docker cada aproximadamente cinco segundos; límites e image IDs se registran antes/después.
-- `runner.log`: salida real del generador. En cohort, `cohort-attempts.jsonl` y `cohort-audit.json` conservan intentos, rechazos HTTP/asíncronos, ganador, pendientes y dispersión real de inicio.
+- `runner.log`: salida real del generador. En cohort, `cohort-attempts.jsonl` y `cohort-audit.json` conservan intentos, rechazos HTTP/asíncronos, ganadores por entrada, pendientes y dispersión real de inicio.
 
 Los recursos del generador forman parte del resultado: saturarlo puede limitar la carga. Una ejecución con working tree sucio identifica las imágenes locales reales y no se presenta como validación de un commit cerrado. `validate` produce únicamente `configuration-validated-without-application-traffic`, nunca un benchmark aprobado.
 
