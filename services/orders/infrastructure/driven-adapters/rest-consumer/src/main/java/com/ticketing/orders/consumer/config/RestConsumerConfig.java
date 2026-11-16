@@ -11,6 +11,8 @@ import org.springframework.http.client.reactive.ClientHttpConnector;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.resources.ConnectionProvider;
+import java.time.Duration;
 
 import static io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -29,19 +31,32 @@ public class RestConsumerConfig {
     }
 
     @Bean
-    public WebClient getWebClient(WebClient.Builder builder) {
+    public WebClient getWebClient(WebClient.Builder builder, ConnectionProvider inventoryConnectionProvider) {
         return builder
             .baseUrl(url)
             .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-            .clientConnector(getClientHttpConnector())
+            .clientConnector(getClientHttpConnector(inventoryConnectionProvider))
             .build();
     }
 
-    private ClientHttpConnector getClientHttpConnector() {
+    @Bean(destroyMethod = "dispose")
+    public ConnectionProvider inventoryConnectionProvider() {
+        return ConnectionProvider.builder("inventory-http")
+                .maxConnections(Math.max(ConnectionProvider.DEFAULT_POOL_MAX_CONNECTIONS, 500))
+                .maxIdleTime(Duration.ofSeconds(15))
+                .maxLifeTime(Duration.ofSeconds(30))
+                .evictInBackground(Duration.ofSeconds(15))
+                .build();
+    }
+
+    private ClientHttpConnector getClientHttpConnector(ConnectionProvider connectionProvider) {
         /*
         IF YO REQUIRE APPEND SSL CERTIFICATE SELF SIGNED: this should be in the default cacerts trustore
         */
-        return new ReactorClientHttpConnector(HttpClient.create()
+        return new ReactorClientHttpConnector(HttpClient.create(connectionProvider)
+                .resolver(resolver -> resolver.cacheMaxTimeToLive(Duration.ofSeconds(30))
+                        .cacheMinTimeToLive(Duration.ZERO)
+                        .cacheNegativeTimeToLive(Duration.ZERO))
                 .compress(true)
                 .keepAlive(true)
                 .option(CONNECT_TIMEOUT_MILLIS, timeout)

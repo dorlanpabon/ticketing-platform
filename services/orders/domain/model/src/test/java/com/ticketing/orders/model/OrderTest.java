@@ -41,4 +41,21 @@ class OrderTest {
         assertThrows(UnsupportedOperationException.class,() -> message.payload().put("bad",2));
         OutboxEntry outbox=new OutboxEntry("key","owner",message); assertEquals(message,outbox.envelope());
     }
+    @Test void envelopePreservesNullOptionalsWithoutSharingTheInputMap() {
+        var payload = new HashMap<String,Object>();
+        payload.put("confirmationId", null);
+        payload.put("type", "PURCHASE");
+        var envelope = Envelope.create("ReservationStateChanged", "o", payload, Instant.EPOCH);
+        payload.clear();
+        assertTrue(envelope.payload().containsKey("confirmationId"));
+        assertNull(envelope.payload().get("confirmationId"));
+        assertEquals("PURCHASE", envelope.payload().get("type"));
+        assertThrows(UnsupportedOperationException.class, () -> envelope.payload().put("confirmationId", "changed"));
+    }
+    @Test void envelopeStillRejectsNullPayloadAndNullKeys() {
+        assertThrows(NullPointerException.class, () -> Envelope.create("test", "o", null, Instant.EPOCH));
+        var payload = new HashMap<String,Object>();
+        payload.put(null, "invalid-key");
+        assertThrows(NullPointerException.class, () -> Envelope.create("test", "o", payload, Instant.EPOCH));
+    }
 }
