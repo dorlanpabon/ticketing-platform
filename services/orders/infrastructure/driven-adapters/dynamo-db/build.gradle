@@ -1,0 +1,18 @@
+dependencies {
+    implementation 'org.slf4j:slf4j-api'
+    implementation 'software.amazon.awssdk:dynamodb-enhanced'
+    implementation 'org.reactivecommons.utils:object-mapper-api:0.1.0'
+    testImplementation 'org.reactivecommons.utils:object-mapper:0.1.0'
+}
+
+dependencies { implementation 'tools.jackson.core:jackson-databind' }
+
+tasks.named('test') { useJUnitPlatform { excludeTags 'integration' } }
+tasks.register('integrationTest', Test) {
+    description = 'Validates durable order and outbox transactions against DynamoDB Local.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'integration' }
+    shouldRunAfter tasks.named('test')
+}

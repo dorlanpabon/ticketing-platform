@@ -1,5 +1,22 @@
+import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.testing.jacoco.tasks.JacocoReport
 import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+
+def coverageClasses = subprojects.collectEntries { module ->
+    def generatedSources = module.tasks.named('compileJava', JavaCompile)
+        .flatMap { it.options.generatedSourceOutputDirectory }
+    def classes = module.sourceSets.main.output.classesDirs.asFileTree.matching {
+        // Exclude mapper implementations only when the annotation processor generated their source.
+        exclude { entry ->
+            if (!entry.name.endsWith('MapperImpl.class')) {
+                return false
+            }
+            def sourcePath = entry.relativePath.pathString.replaceFirst(/\.class$/, '.java')
+            return generatedSources.get().file(sourcePath).asFile.isFile()
+        }
+    }
+    [(module.name): classes]
+}
 
 subprojects {
     // Keep the scaffold's report task, but separate mutation testing from unit coverage.
@@ -16,16 +33,16 @@ subprojects {
             timestampedReports = false
         }
     }
-    def runtime = sourceSets.main.runtimeClasspath
+    def classpath = sourceSets.main.runtimeClasspath + sourceSets.main.compileClasspath
     def destination = layout.buildDirectory.file('quality/module-classpath.txt')
     tasks.register('exportQualityClasspath') {
         dependsOn tasks.named('classes')
-        inputs.files(runtime)
+        inputs.files(classpath)
         outputs.file(destination)
         doLast {
             def target = destination.get().asFile
             target.parentFile.mkdirs()
-            target.text = runtime.files.findAll { it.exists() }.collect { it.absolutePath }.join(File.pathSeparator)
+            target.text = classpath.files.findAll { it.exists() }.collect { it.absolutePath }.join(File.pathSeparator)
         }
     }
 }
@@ -69,17 +86,24 @@ gradle.projectsEvaluated {
         def report = module.tasks.named('jacocoTestReport', JacocoReport).get()
         report.setDependsOn([module.tasks.named('test')])
         report.executionData.setFrom(module.layout.buildDirectory.file('jacoco/test.exec'))
+        report.classDirectories.setFrom(coverageClasses[module.name])
     }
     def merged = rootProject.tasks.named('jacocoMergedReport', JacocoReport).get()
     merged.setDependsOn(rootProject.subprojects.collect { it.tasks.named('test') })
     merged.executionData.setFrom(rootProject.subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
+    merged.classDirectories.setFrom(coverageClasses.values())
+    // The scaffold's scanner also requests the optional all-module PIT aggregate.
+    // Keep it available manually; automatic analysis uses the required domain gate.
+    def scanner = rootProject.tasks.named('sonar').get()
+    scanner.setDependsOn(scanner.dependsOn.findAll { it != 'pitestReportAggregate' })
+    scanner.dependsOn(rootProject.tasks.named('mutationGate'), rootProject.tasks.named('unitCoverageGate'))
 }
 
 tasks.register('unitCoverageGate', JacocoCoverageVerification) {
     dependsOn tasks.named('jacocoMergedReport')
     executionData.from(subprojects.collect { it.layout.buildDirectory.file('jacoco/test.exec') })
     sourceDirectories.from(subprojects.collect { it.sourceSets.main.allSource.srcDirs })
-    classDirectories.from(subprojects.collect { it.sourceSets.main.output })
+    classDirectories.from(coverageClasses.values())
     violationRules {
         rule {
             limit { counter = 'LINE'; value = 'COVEREDRATIO'; minimum = 0.90 }

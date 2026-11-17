@@ -1,0 +1,1798 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ticketing API",
+    "version": "1.0.0",
+    "description": "Contratos HTTP de Catalog, Orders e Inventory. Las operaciones públicas autentican al comprador o al administrador. API Gateway valida JWT y asigna las cabeceras de identidad. En local se usan identidades de prueba. Las rutas internas de Inventory dependen de la red privada. Orders devuelve 202 después de guardar la solicitud y confirmar el envío a SQS. Inventory asigna las entradas de forma asíncrona. SOLD y COMPLIMENTARY son estados finales. El límite de 16 KiB devuelve 400 en Catalog y Orders y 413 en Inventory. La arquitectura y sus límites están en docs/arquitectura.md."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:18080",
+      "description": "Local Catalog. Per-path servers select Orders or Inventory. Replace public operation URLs with the Terraform API Gateway output when deployed."
+    }
+  ],
+  "paths": {
+    "/api/v1/events": {
+      "post": {
+        "operationId": "createEvent",
+        "summary": "Persist event and provisioning work",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Persist event and provisioning work",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Resource status URL where returned."
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or absent JSON, invalid fields/key, or body above the configured 16 KiB decoder limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient role",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEvent"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{8,128}$"
+            },
+            "description": "Owner and operation scoped. Reuse with a different payload returns 409."
+          }
+        ],
+        "description": "Requires exact admin group. Persists a PROVISIONING event and its ProvisionInventory outbox message atomically. InventoryReady later activates the event. An identical idempotency-key replay returns the stored event.",
+        "tags": [
+          "Catalog"
+        ]
+      },
+      "get": {
+        "operationId": "listEvents",
+        "summary": "List published events",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List published events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque continuation cursor; do not construct or alter."
+          }
+        ],
+        "tags": [
+          "Catalog"
+        ],
+        "description": "Lists ACTIVE events through the Catalog index. Publication is eventually visible. cursor is an opaque base64url continuation token returned by this operation."
+      },
+      "servers": [
+        {
+          "url": "http://localhost:18080",
+          "description": "Local Catalog API"
+        }
+      ]
+    },
+    "/api/v1/events/{eventId}": {
+      "get": {
+        "operationId": "getEvent",
+        "summary": "Get event metadata and provisioning status",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Get event metadata and provisioning status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Catalog"
+        ],
+        "description": "Returns PROVISIONING or ACTIVE metadata by ID; provisioning must complete before ticket allocation."
+      },
+      "parameters": [
+        {
+          "name": "eventId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "servers": [
+        {
+          "url": "http://localhost:18080",
+          "description": "Local Catalog API"
+        }
+      ]
+    },
+    "/api/v1/events/{eventId}/tickets": {
+      "get": {
+        "operationId": "listTickets",
+        "summary": "List numbered seats and observed states",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List numbered seats and observed states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "description": "Numeric ticket ID from nextCursor. Send it unchanged. Valid values are 1 through 100000; an in-range cursor beyond capacity returns an empty page."
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ],
+        "description": "Returns numbered entries in ascending numeric order. Expired holders encountered on the page are released as whole reservations before rereading. Availability remains authoritative only when a reservation transaction succeeds."
+      },
+      "parameters": [
+        {
+          "name": "eventId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "servers": [
+        {
+          "url": "http://localhost:18082",
+          "description": "Local Inventory API"
+        }
+      ]
+    },
+    "/api/v1/events/{eventId}/availability": {
+      "get": {
+        "operationId": "getAvailability",
+        "summary": "Read an atomic snapshot of all 16 counter shards",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read an atomic snapshot of all 16 counter shards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Availability"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Inventory"
+        ],
+        "description": "Reads metadata plus 16 counter shards in one DynamoDB transaction. capacity equals the sum of the five state counters. A primary-table freshness check returns 503 INVENTORY_STALE when an unreleased reservation is more than five seconds overdue. This five-second policy is an implementation choice, not a PDF-specified SLA."
+      },
+      "parameters": [
+        {
+          "name": "eventId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "servers": [
+        {
+          "url": "http://localhost:18082",
+          "description": "Local Inventory API"
+        }
+      ]
+    },
+    "/api/v1/orders": {
+      "post": {
+        "operationId": "createOrder",
+        "summary": "Create a purchase after SQS confirms enqueue",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Order persisted and purchase command accepted by SQS. Inventory allocates tickets asynchronously.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Resource status URL where returned."
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or absent JSON, invalid fields/key, or body above the configured 16 KiB decoder limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable. ORDER_ENQUEUE_UNAVAILABLE means Orders could not confirm SQS enqueue. Retry with the same Idempotency-Key and payload.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Purchase"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{8,128}$"
+            },
+            "description": "Owner and operation scoped. Reuse with a different payload returns 409."
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "description": "Customer identity comes from authentication. Accepts one to ten distinct numbered entries from one event and canonicalizes ticketIds for idempotency. Orders commits the order and outbox atomically. Either the API or the relay can publish that command to SQS. Orders returns 202 only after confirmation of the current or an earlier send. The response reports the order, which may still be RESERVING. Follow GET /api/v1/orders/{orderId}. The same key and payload recover the original ID and deadline."
+      },
+      "servers": [
+        {
+          "url": "http://localhost:18081",
+          "description": "Local Orders API"
+        }
+      ]
+    },
+    "/api/v1/orders/{orderId}": {
+      "get": {
+        "operationId": "getOrder",
+        "summary": "Read own order with authoritative inventory state",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read own order with authoritative inventory state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Orders"
+        ],
+        "description": "Owner-only authoritative view: reads the durable order and Inventory state. Unknown or another customer order returns 404. An unresolved initial order may still be RESERVING; if Inventory is unavailable, return 503 rather than presenting an old projection as authoritative."
+      },
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "servers": [
+        {
+          "url": "http://localhost:18081",
+          "description": "Local Orders API"
+        }
+      ]
+    },
+    "/api/v1/orders/{orderId}/confirm": {
+      "post": {
+        "operationId": "confirmOrder",
+        "summary": "Accept durable confirmation without extending the deadline",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accept durable confirmation without extending the deadline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or absent JSON, invalid fields/key, or body above the configured 16 KiB decoder limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Reservation expired",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{8,128}$"
+            },
+            "description": "Owner and operation scoped. Reuse with a different payload returns 409."
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "description": "No request body. Owner-only confirmation with Idempotency-Key. Durably stores ConfirmPurchase and returns the currently observed order with 202, not a promise of SOLD. Same order uses a stable command ID. Reconfirming SOLD is idempotent; expired nonfinal orders return 410. No Location header is emitted here."
+      },
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "servers": [
+        {
+          "url": "http://localhost:18081",
+          "description": "Local Orders API"
+        }
+      ]
+    },
+    "/api/v1/admin/complimentary-orders": {
+      "post": {
+        "operationId": "createComplimentaryOrder",
+        "summary": "Create a complimentary order after SQS confirms enqueue",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Order persisted and complimentary command accepted by SQS. Inventory allocates tickets asynchronously.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Resource status URL where returned."
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or absent JSON, invalid fields/key, or body above the configured 16 KiB decoder limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient role",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable. ORDER_ENQUEUE_UNAVAILABLE means Orders could not confirm SQS enqueue. Retry with the same Idempotency-Key and payload.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComplimentaryPurchase"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{8,128}$"
+            },
+            "description": "Owner and operation scoped. Reuse with a different payload returns 409."
+          }
+        ],
+        "description": "Requires exact admin group, beneficiaryId and a nonblank reason. Orders commits the order and outbox atomically and returns 202 after confirming that SQS accepted the command. The same key and payload recover the original ID and deadline. Inventory processes the allocation asynchronously. COMPLIMENTARY is final and consumes capacity separately from sales. The beneficiary owns subsequent GET access.",
+        "tags": [
+          "Orders"
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:18081",
+          "description": "Local Orders API"
+        }
+      ]
+    },
+    "/internal/reservations/{orderId}": {
+      "servers": [
+        {
+          "url": "http://localhost:18082",
+          "description": "Local Inventory, loopback only"
+        },
+        {
+          "url": "http://inventory:8080",
+          "description": "Private Compose network; used by Orders"
+        }
+      ],
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          }
+        }
+      ],
+      "x-internal": true,
+      "put": {
+        "operationId": "reserveReservation",
+        "summary": "Reserve all selected entries or persist a rejection",
+        "tags": [
+          "Internal Inventory"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Authoritative durable reservation snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveReservation"
+              }
+            }
+          }
+        },
+        "description": "No Idempotency-Key header: orderId is the immutable idempotency key. 200 can be AVAILABLE with TICKETS_UNAVAILABLE or RESERVATION_EXPIRED. A successful PURCHASE writes its expiry timer outbox in the same Inventory transaction. Access is restricted by private network policy, not bearer authentication."
+      },
+      "get": {
+        "operationId": "getReservation",
+        "summary": "Read and materialize logical expiry for one reservation",
+        "tags": [
+          "Internal Inventory"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Authoritative durable reservation snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/reservations/{orderId}/confirm": {
+      "servers": [
+        {
+          "url": "http://localhost:18082",
+          "description": "Local Inventory, loopback only"
+        },
+        {
+          "url": "http://inventory:8080",
+          "description": "Private Compose network; used by Orders"
+        }
+      ],
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          }
+        }
+      ],
+      "x-internal": true,
+      "post": {
+        "operationId": "confirmReservation",
+        "summary": "Private recovery operation; the public normal path is asynchronous",
+        "tags": [
+          "Internal Inventory"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Authoritative durable reservation snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource absent or not owned",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict or not ready",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required dependency unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmReservation"
+              }
+            }
+          }
+        },
+        "description": "Private equivalent of processing ConfirmPurchase. Same customer and commandId must be preserved. RESERVED -> PENDING_CONFIRMATION -> SOLD uses two conditional transactions and one unchanged deadline. A held reservation observed at its deadline can return the newly expired snapshot; replay of an already expired reservation returns 409. SOLD stays final."
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT at AWS ingress. Local profile with AUTH_MODE=local uses local-customer-1, local-customer-2 or local-admin as synthetic bearer values; these are not JWTs."
+      }
+    },
+    "schemas": {
+      "CreateEvent": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "\\S"
+          },
+          "venue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Must be strictly later than the server clock at creation."
+          },
+          "capacity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "name",
+          "venue",
+          "startsAt",
+          "capacity"
+        ]
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "name": {
+            "type": "string"
+          },
+          "venue": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "capacity": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROVISIONING",
+              "ACTIVE"
+            ]
+          }
+        },
+        "required": [
+          "eventId",
+          "name",
+          "venue",
+          "startsAt",
+          "capacity",
+          "status"
+        ]
+      },
+      "EventPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "cursor"
+        ]
+      },
+      "Purchase": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "ticketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "eventId",
+          "ticketIds"
+        ]
+      },
+      "ComplimentaryPurchase": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "ticketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "beneficiaryId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "eventId",
+          "ticketIds",
+          "beneficiaryId",
+          "reason"
+        ]
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ticketId": {
+            "type": "string",
+            "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "RESERVED",
+              "PENDING_CONFIRMATION",
+              "SOLD",
+              "COMPLIMENTARY"
+            ]
+          }
+        },
+        "required": [
+          "eventId",
+          "ticketId",
+          "status"
+        ]
+      },
+      "TicketPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Ticket"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "Availability": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "capacity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "available": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingConfirmation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sold": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "complimentary": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "eventId",
+          "capacity",
+          "available",
+          "reserved",
+          "pendingConfirmation",
+          "sold",
+          "complimentary"
+        ]
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "customerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "requestedTicketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "activeTicketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "RESERVED",
+              "PENDING_CONFIRMATION",
+              "SOLD",
+              "COMPLIMENTARY"
+            ]
+          },
+          "workflowStatus": {
+            "type": "string",
+            "enum": [
+              "RESERVING",
+              "AWAITING_CONFIRMATION",
+              "CONFIRMING",
+              "COMPLETED",
+              "REJECTED",
+              "EXPIRED"
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "description": "Empty before authority is known; NONE for an active/final allocation; TICKETS_UNAVAILABLE or RESERVATION_EXPIRED for a resolved rejection/release."
+          },
+          "inventoryVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Original requestedAt plus 600 seconds. Retries, confirmations and reconciliation preserve this timestamp."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "PURCHASE",
+              "COMPLIMENTARY"
+            ]
+          },
+          "actorId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "orderId",
+          "eventId",
+          "customerId",
+          "requestedTicketIds",
+          "activeTicketIds",
+          "status",
+          "workflowStatus",
+          "resolution",
+          "inventoryVersion",
+          "requestedAt",
+          "expiresAt",
+          "type",
+          "actorId",
+          "reason"
+        ],
+        "description": "status describes this order assignment. AVAILABLE with RESERVING, REJECTED or EXPIRED does not assert that its historical requested tickets are currently free. requestedTicketIds is history; activeTicketIds is the current assignment."
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "traceId"
+        ]
+      },
+      "Reservation": {
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "customerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "RESERVED",
+              "PENDING_CONFIRMATION",
+              "SOLD",
+              "COMPLIMENTARY"
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "NONE",
+              "TICKETS_UNAVAILABLE",
+              "RESERVATION_EXPIRED"
+            ]
+          },
+          "inventoryVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "requestedTicketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "activeTicketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "PURCHASE",
+              "COMPLIMENTARY"
+            ]
+          },
+          "actorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirmationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "orderId",
+          "eventId",
+          "customerId",
+          "status",
+          "resolution",
+          "inventoryVersion",
+          "requestedTicketIds",
+          "activeTicketIds",
+          "requestedAt",
+          "expiresAt",
+          "type",
+          "actorId",
+          "reason",
+          "confirmationId"
+        ]
+      },
+      "ReserveReservation": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "customerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "ticketIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "PURCHASE",
+              "COMPLIMENTARY",
+              null
+            ],
+            "default": "PURCHASE"
+          },
+          "actorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "eventId",
+          "customerId",
+          "ticketIds",
+          "requestedAt",
+          "expiresAt"
+        ],
+        "description": "Private command. Path orderId is authoritative; a supplied body orderId is ignored. expiresAt must be after requestedAt and no more than 600 seconds later. requestedAt may not exceed Inventory clock by more than two seconds. A past deadline creates a durable rejection. Replays must preserve the normalized payload and selected ticket ordering.",
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "const": "COMPLIMENTARY"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "actorId",
+                "reason"
+              ],
+              "properties": {
+                "actorId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "pattern": "\\S"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ConfirmReservation": {
+        "type": "object",
+        "required": [
+          "customerId",
+          "commandId"
+        ],
+        "properties": {
+          "customerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          },
+          "commandId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9:_-]+$"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Catalog"
+    },
+    {
+      "name": "Orders"
+    },
+    {
+      "name": "Inventory"
+    },
+    {
+      "name": "Internal Inventory",
+      "description": "Private service-to-service operations; never exposed by API Gateway."
+    }
+  ]
+}

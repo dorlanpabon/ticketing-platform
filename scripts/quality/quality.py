@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -156,7 +157,16 @@ def content_hash(root: Path, protected_only: bool = False) -> str:
             continue
         if "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
-        digest.update(name.encode() + b"\0" + path.read_bytes() + b"\0")
+        content = path.read_bytes()
+        if protected_only and b"\0" not in content:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+            else:
+                # Normalize only the text-policy fingerprint; Git snapshots stay byte-exact.
+                content = content.replace(b"\r\n", b"\n")
+        digest.update(name.encode() + b"\0" + content + b"\0")
     return digest.hexdigest()
 
 
@@ -288,8 +298,9 @@ def pmd_in_container(candidate: Path, trusted: Path, output: Path, service: str,
         raise QualityError("PMD must come from the verified standalone distribution")
     java_files = output / f"{service}-sources.txt"
     java_files.write_text("\n".join("/workspace/" + p.relative_to(candidate).as_posix() for p in sources), encoding="utf-8")
-    # Container uses POSIX separators even when the host is Windows.
-    aux = ":".join("/workspace/" + Path(p).relative_to(candidate).as_posix() for p in classpath)
+    auxiliary_file = output / f"{service}-auxclasspath.txt"
+    auxiliary_paths = ["/workspace/" + Path(p).relative_to(candidate).as_posix() for p in classpath]
+    auxiliary_file.write_text("\n".join(auxiliary_paths) + "\n", encoding="utf-8")
     base = [docker, "run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--pids-limit=256", "--memory=2g", "--cpus=2", "--user", str(os.getuid()) if hasattr(os, "getuid") else "1000:1000",
             "--mount", f"type=bind,source={candidate},target=/workspace,readonly",
@@ -300,7 +311,7 @@ def pmd_in_container(candidate: Path, trusted: Path, output: Path, service: str,
     if version not in actual:
         raise QualityError("Container PMD version does not match policy")
     execute([*base, "check", "--file-list", f"/reports/{service}-sources.txt", "--rulesets", "/policy/pmd.xml",
-             "--use-version", "java-25", "--aux-classpath", aux, "--format", "json", "--report-file",
+             "--use-version", "java-25", "--aux-classpath", f"file:/reports/{auxiliary_file.name}", "--format", "json", "--report-file",
              f"/reports/pmd-{service}.json", "--no-cache", "--no-progress"])
     if not (output / f"pmd-{service}.json").is_file():
         raise QualityError("PMD did not produce evidence")
@@ -401,6 +412,15 @@ def sonar_request(host: str, route: str, token: str, *, data: dict | None = None
 
 
 def validate_sonar_metrics(metrics: dict[str, str]) -> None:
+    numeric = {}
+    for name, raw in metrics.items():
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise QualityError(f"Invalid Sonar metric: {name}") from exc
+        if not math.isfinite(value):
+            raise QualityError(f"Non-finite Sonar metric: {name}")
+        numeric[name] = value
     required = {"coverage": (90.0, "min"), "duplicated_lines_density": (3.0, "max"),
                 "reliability_rating": (1.0, "max"), "security_rating": (1.0, "max"),
                 "sqale_rating": (1.0, "max"), "bugs": (0.0, "max"), "vulnerabilities": (0.0, "max"),
@@ -408,19 +428,19 @@ def validate_sonar_metrics(metrics: dict[str, str]) -> None:
     for name, (limit, mode) in required.items():
         if name not in metrics:
             raise QualityError(f"Missing Sonar metric: {name}")
-        value = float(metrics[name])
+        value = numeric[name]
         if (mode == "min" and value < limit) or (mode == "max" and value > limit):
             raise QualityError(f"Sonar metric rejected: {name}")
-    if float(metrics.get("security_hotspots", "0")) > 0 and float(metrics.get("security_hotspots_reviewed", "0")) < 100:
+    if numeric.get("security_hotspots", 0) > 0 and numeric.get("security_hotspots_reviewed", 0) < 100:
         raise QualityError("Security hotspots require documented review")
-    if "new_coverage" in metrics and float(metrics["new_coverage"]) < 90:
+    if "new_coverage" in numeric and numeric["new_coverage"] < 90:
         raise QualityError("New-code coverage is below 90%")
 
 
-def sonar_evidence(host: str, token: str, project: str, task_id: str, sha: str, timeout: int = 600) -> dict:
+def sonar_evidence(host: str, token: str, project: str, task_id: str, sha: str, timeout: int = 600, *, ce_token: str | None = None) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), token)["task"]
+        task = sonar_request(host, "/api/ce/task?" + urllib.parse.urlencode({"id": task_id}), ce_token or token)["task"]
         if task.get("componentKey") != project:
             raise QualityError("Sonar task belongs to another project")
         if task["status"] == "SUCCESS":
@@ -479,7 +499,7 @@ def verify_manifest(manifest: dict, tree: str, expected_sha: str | None = None, 
         if evidence.get("qualityGate") != "OK" or not evidence.get("analysisId") or not evidence.get("ceTaskId"):
             raise QualityError("Incomplete or failed Sonar evidence")
         validate_sonar_metrics(evidence.get("metrics", {}))
-    required = ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")
+    required = ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")
     if any(manifest.get("checks", {}).get(name) != "passed" for name in required):
         raise QualityError("Candidate evidence is incomplete")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("policyHash", "")):
@@ -544,7 +564,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise QualityError("SONAR_TOKEN is required")
             reader = os.environ.get("SONAR_READ_TOKEN") or token
             write_json(args.output, sonar_evidence(os.environ.get("SONAR_HOST_URL") or "http://localhost:19000", reader,
-                                                   args.project, args.task_id, sha))
+                                                   args.project, args.task_id, sha, ce_token=token))
         elif args.command == "verify-manifest":
             value = json.loads(args.manifest.read_text(encoding="utf-8"))
             verify_manifest(value, git(repo, "rev-parse", f"{revision(repo, args.revision)}^{{tree}}"), args.source_sha, args.cloud)
