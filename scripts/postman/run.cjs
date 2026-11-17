@@ -9,10 +9,10 @@ const ROOT = path.resolve(__dirname, '../..');
 const COLLECTION = path.join(ROOT, 'contracts/ticketing.postman_collection.json');
 const VERSION = '6.2.3';
 const ENDPOINTS = Object.freeze({ catalog: 'http://localhost:18080', orders: 'http://localhost:18081', inventory: 'http://localhost:18082' });
-const ITEMS = Object.freeze(['01 Create event', '02 Wait for ACTIVE', '03 Reserve two tickets',
-  '04 Wait for reservation', '05 Idempotent retry', '06 Confirm', '07 Wait for SOLD',
-  '08 Deny another customer', '09 Complimentary ticket', '10 Wait for COMPLIMENTARY',
-  '11 Verify inventory counts', '12 Reject different payload for same key']);
+const ITEMS = Object.freeze(['01 Crear evento', '02 Esperar evento ACTIVE', '03 Reservar dos entradas',
+  '04 Esperar reserva', '05 Reintentar con la misma clave', '06 Confirmar compra', '07 Esperar orden SOLD',
+  '08 Rechazar consulta de otro comprador', '09 Asignar entrada de cortesía', '10 Esperar orden COMPLIMENTARY',
+  '11 Verificar disponibilidad', '12 Rechazar cambios con la misma clave']);
 
 function requireCheck(condition, message) {
   if (!condition) throw new Error(message);

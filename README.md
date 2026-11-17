@@ -1,75 +1,51 @@
-# Ticketing Platform
+# Plataforma de venta de entradas
 
-Three reactive services generated with Bancolombia Scaffold Clean Architecture 5.2.1: Catalog, Orders and Inventory. Java 25, Spring Boot 4.1.2, DynamoDB and SQS.
+API reactiva para publicar eventos, reservar entradas numeradas, confirmar compras y consultar disponibilidad. Catalog administra los eventos, Orders recibe las órdenes e Inventory asigna las entradas. Los tres servicios usan Java 25, Spring Boot 4.1.2 y WebFlux sobre el Scaffold Clean Architecture de Bancolombia. DynamoDB mantiene los datos y SQS procesa los comandos y eventos.
 
-## Status
+## Instalación y arranque local
 
-The local runtime, contracts and quality tooling are implemented. `docs/evidence` maps requirements to code and records development observations. Generated verification reports under `build/quality` identify the tested SHA, dirty state, runtime and limits; architecture targets are not test results. No AWS resources are deployed automatically. Terraform is maintained in the independent `ticketing-infra` repository.
+1. Instala Docker con Compose v2 y activa los contenedores Linux. En Windows puedes usar Docker Desktop. La primera compilación requiere conexión a Internet para descargar imágenes y dependencias.
+2. Desde la raíz de `ticketing-platform`, verifica la configuración y levanta el entorno. Docker incluye Java y Gradle en la compilación. Para ejecutar pruebas Gradle fuera de Docker se requiere JDK 25. Los scripts de verificación local requieren Python 3 y las solicitudes de ejemplo usan PowerShell.
 
-## Business contract
+```powershell
+docker compose version
+docker compose config --quiet
+docker compose up --build --wait
+docker compose ps
+```
 
-For order creation, `202 Accepted` confirms the durable order and successful enqueue in SQS. Inventory assigns tickets asynchronously. Orders stores the order and outbox command in one DynamoDB transaction and uses the same outbox entry for publication by the API or relay. If Orders cannot confirm enqueue, it returns `503 ORDER_ENQUEUE_UNAVAILABLE`. Retry the same request with the same `Idempotency-Key` to recover the original order and deadline.
+3. Cuando las APIs y los consumidores estén listos, comprueba los puntos de salud y sigue los ejemplos de la sección siguiente.
 
-A purchase contains 1–10 distinct numbered tickets from one event. The reservation deadline is fixed when Orders stores the order, at most 600 seconds after creation. Only SOLD tickets count as sales. COMPLIMENTARY is separate.
+```powershell
+curl.exe --fail http://localhost:18080/actuator/health/readiness
+curl.exe --fail http://localhost:18081/actuator/health/readiness
+curl.exe --fail http://localhost:18082/actuator/health/readiness
+```
 
-An order with AVAILABLE status has no active allocation; this does not assert that its historical requested tickets are currently free. `workflowStatus`, `resolution`, requested and active ticket IDs disambiguate the response.
-
-Catalog reads event validation and pagination settings from `catalog.limits`. They may be tightened by environment within the published API bounds. The configured default page size must stay within the configured page range. [Catalog application.yaml](services/catalog/applications/app-service/src/main/resources/application.yaml)
-
-## Delivery flow
-
-`feature/*`, `fix/*`, `chore/*` start from `develop`, then merge into `develop`, `release` and `main`. DEV validation includes Sonar before promotion. Commits retain their real timestamps. Environment configuration comes from Terraform; promotion reuses approved image digests.
-
-## Architecture sources
-
-- [Implementation plan](docs/planning/PLAN-MAESTRO.md)
-- [Requirements matrix](docs/planning/MATRIZ-REQUISITOS.md)
-- [Architecture diagrams](docs/planning/DIAGRAMAS.md)
-- [Current runtime and expiration flow](docs/architecture-runtime.md)
-- [Architecture decisions](docs/decisions.md)
-- [Implementation evidence](docs/evidence/requirements.md)
-- [Operations runbook](docs/runbook.md)
-
-Generated infrastructure examples are adapted to real ports and workflows. Business domain types are owned independently by each service.
-
-## Local execution
-
-Requires Docker Compose. Run `docker compose up --build --wait` from this repository. No AWS account is required for this local profile.
-
-Each context runs as two independent processes using the same image: an HTTP API and an asynchronous worker. APIs set `APP_ROLE=api`, `API_ENABLED=true`, `WORKERS_ENABLED=false`; workers invert those flags and have no published host ports. Worker HTTP business routes return 404 while readiness and Prometheus remain available. Runtime flags complement network/IAM isolation; they do not replace it.
-
-Run `python scripts/acceptance/verify.py --allow-dirty --checks queueOutage` against this local stack to verify recovery with the same idempotency key. The check pauses LocalStack and stops the Orders and Inventory workers, then restores them.
-
-Scale consumers independently with `docker compose up -d --wait --scale inventory-worker=2` (also supported for `catalog-worker` and `orders-worker`). Conditional DynamoDB writes, inbox deduplication and outbox leases coordinate replicas. Run `python scripts/local/verify_roles.py --min-inventory-workers 2` to record actual runtime identities and probe evidence. This verifies role isolation and replica readiness; the concurrency/recovery acceptance suite separately verifies business correctness.
-
-The default six JVMs are capped at 512 MiB each with a 70% maximum heap. DynamoDB Local and LocalStack run in separate containers with their own resource limits. Sonar is optional and needs up to 3 GiB plus PostgreSQL. On an 8 GiB Docker VM, stop the quality profile before scaling workers or running parallel image builds. The infrastructure repository scales the six ECS services independently and reuses three approved image digests.
-
-| Service | Local URL |
+| Componente | Dirección local |
 |---|---|
 | Catalog | `http://localhost:18080` |
 | Orders | `http://localhost:18081` |
 | Inventory | `http://localhost:18082` |
+| DynamoDB Local | `http://localhost:18000` |
 | LocalStack SQS | `http://localhost:4566` |
 
-Local HTTP requests use `Authorization: Bearer local-customer-1`, `local-customer-2`, or `local-admin`. These synthetic identities work only with the local authentication mode/profile. AWS uses JWT validation at the API gateway and application ownership/role checks.
+Compose inicia una API y un consumidor por contexto con la misma imagen. Los consumidores solo son accesibles dentro de la red de Docker. El arranque crea las tablas de DynamoDB Local y cuatro colas SQS con sus respectivas colas de mensajes fallidos (DLQ). La simulación local funciona con identidades y credenciales de prueba sin cuenta AWS.
 
-The local profile uses DynamoDB Local for tables and LocalStack Community exclusively for SQS. Queue initialization creates four queues and their dead-letter queues before the APIs and workers start. DynamoDB Local keeps its tables in a named volume. LocalStack keeps messages in memory and recreates empty queues on restart. Business fixtures are created explicitly by the acceptance scripts. AWS IAM, KMS and service limits require AWS verification.
+`docker-compose.yml` define los puertos, `APP_ROLE`, `API_ENABLED`, `WORKERS_ENABLED`, `AUTH_MODE` y las direcciones de DynamoDB y SQS. Las reglas de cada contexto están en su `application.yaml`. Para cambiar estos valores en AWS se utiliza [ticketing-infra](../ticketing-infra/README.md).
 
-Expiration uses a delayed `ExpireReservation` message per held reservation in the dedicated `inventory-expirations` queue, with a separate DLQ. A single lightweight `expiry-recovery` container sends `SweepExpiredReservations` every minute for recovery through the same queue and consumer path. It is a local publisher, not an EventBridge emulator. AWS uses EventBridge Scheduler; workers do not run a local sweep schedule in Compose. The business deadline remains the original `expiresAt`, even during delivery or consumer delays.
+Para seguir los registros y detener el entorno, usa los comandos siguientes. Al detenerlo, DynamoDB conserva sus tablas en un volumen. LocalStack Community recrea las colas vacías al reiniciar; el entorno local es para demostración y pruebas.
 
-Orders recovery acquires its coordinator lease before querying the due index. Stable reservations are rechecked every 60 seconds; pending intents use 5 seconds, and failed records persist a 5/10/20/40/60 second retry delay. Empty index polling backs off with jitter, and non-owner replicas wait for the lease.
+```powershell
+docker compose logs -f --tail 100 catalog orders inventory inventory-worker localstack
+docker compose stop
+```
 
-For local Sonar, run `python scripts/local/setup_quality.py` once, then `docker compose --profile quality up -d sonar`. The interface binds to `http://localhost:19000`. Project/gate provisioning is in `scripts/quality/sonar_setup.py`. Never commit its credentials or analysis tokens.
+Si levantaste el entorno con `docker compose -p <proyecto>`, repite `-p <proyecto>` en los comandos de operación. Si hay puertos ocupados, consulta `docker compose ls` para identificar si corresponde a una instancia previa de esta plataforma.
 
-Public and asynchronous specifications are in `contracts/openapi.json` and `contracts/asyncapi.json`. Internal Inventory endpoints are not exposed through the AWS public gateway.
+## Ejemplos de uso de la API
 
-The scaffold adapters and their tests are retained and named for their responsibilities: event, order and inventory repositories; event listeners and command publishers; and the Orders HTTP adapter for Inventory. The scaffold regenerates its architecture test/helper with machine-specific paths; those generated test files remain local and are regenerated during builds.
-
-Java source uses explicit imports and four spaces for nesting and line continuations. Leave blank lines between methods and related declarations. Keep fixed protocol fields in constants classes within their own module and configurable values in YAML. Log variable data as key–value fields.
-
-## API examples
-
-Run these PowerShell blocks in order after the services are healthy. The example creates a fresh event and uses the local admin and customer identities. Each write has its own idempotency key.
+Ejecuta los bloques en la misma sesión de PowerShell. Cada recorrido crea un evento de prueba y claves de idempotencia propias. Las identidades `local-admin`, `local-customer-1` y `local-customer-2` son exclusivas de la configuración local.
 
 ```powershell
 $catalog = 'http://localhost:18080/api/v1/events'
@@ -87,16 +63,16 @@ function Wait-ForStatus($uri, $headers, $property, $expected) {
         if ($result.$property -eq $expected) { return $result }
         Start-Sleep -Milliseconds 500
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "Expected $property to be $expected. Last value was $($result.$property)."
+    throw "Se esperaba $expected en $property. Último valor: $($result.$property)."
 }
 ```
 
-Create an event as the admin. The response contains its ID, and Catalog lists it after Inventory provisions its numbered tickets.
+**Crear y consultar un evento.** La solicitud devuelve `202` y el `eventId`. Cuando Inventory termina de crear las entradas, el evento pasa a `ACTIVE` y aparece al listar eventos.
 
 ```powershell
 $eventBody = @{
-    name = 'Ticketing demo'
-    venue = 'Local arena'
+    name = 'Concierto de prueba'
+    venue = 'Teatro local'
     startsAt = [DateTimeOffset]::UtcNow.AddDays(7).ToString('o')
     capacity = 20
 } | ConvertTo-Json
@@ -106,7 +82,7 @@ Wait-ForStatus "$catalog/$eventId" $customer 'status' 'ACTIVE'
 Invoke-RestMethod -Uri "${catalog}?limit=5" -Headers $customer
 ```
 
-Request tickets 1 and 2 as a customer. The `202` response includes the order ID after SQS accepts the command. Poll the order until it is ready to confirm, then confirm before `expiresAt`.
+**Solicitar, confirmar y consultar una compra.** Orders responde `202` con el `orderId` tras confirmar el envío a SQS. Espera `AWAITING_CONFIRMATION`, confirma antes de `expiresAt` y consulta hasta que el estado sea `SOLD`.
 
 ```powershell
 $orderBody = @{
@@ -121,18 +97,46 @@ Invoke-RestMethod -Method Post -Uri "$orderUri/confirm" -Headers ($customer + @{
 Wait-ForStatus $orderUri $customer 'status' 'SOLD'
 ```
 
-Assign ticket 3 as a complimentary ticket, then check availability. The response should show 17 available, 2 sold and 1 complimentary.
+**Emitir una cortesía y consultar disponibilidad.** Asigna la entrada `3` como administrador. El resultado esperado es `available=17`, `sold=2` y `complimentary=1`.
 
 ```powershell
 $courtesyBody = @{
     eventId = $eventId
     ticketIds = @('3')
     beneficiaryId = 'local-customer-1'
-    reason = 'Guest speaker'
+    reason = 'Invitación al evento'
 } | ConvertTo-Json
 $courtesy = Invoke-RestMethod -Method Post -Uri "$ordersApi/admin/complimentary-orders" -ContentType 'application/json' -Body $courtesyBody -Headers ($admin + @{ 'Idempotency-Key' = "$runId-courtesy" })
 Wait-ForStatus "$orders/$($courtesy.orderId)" $customer 'status' 'COMPLIMENTARY'
 Invoke-RestMethod -Uri "$inventory/$eventId/availability" -Headers $customer
 ```
 
-For an automated walkthrough, use the [Postman collection](contracts/ticketing.postman_collection.json) and its [local runner instructions](scripts/postman/README.md).
+## Colección de Postman
+
+1. Importa [ticketing.postman_collection.json](contracts/ticketing.postman_collection.json) y selecciona **No Environment**. La colección ya define las URLs e identidades locales. Un entorno con variables como `eventId` u `orderId` puede reemplazar las de la colección.
+2. Abre **Ticketing — aceptación local**, selecciona **Run collection** e inicia desde **01 Crear evento** con una demora de 500 ms entre solicitudes. El recorrido genera un evento nuevo y guarda los identificadores de cada respuesta.
+3. En el paso **08 Rechazar consulta de otro comprador** se espera `404 ORDER_NOT_FOUND`. En **12 Rechazar cambios con la misma clave** se espera `409 IDEMPOTENCY_CONFLICT`. Estas respuestas prueban el aislamiento por propietario y el uso de la clave de idempotencia.
+
+La colección pasa por creación, reserva, reintento, confirmación, cortesía y consulta de disponibilidad. La espera real de diez minutos, la caída de LocalStack y la contención se verifican por separado. [Guía de la colección](scripts/postman/README.md) · [Resultados de la prueba](docs/evidencia.md)
+
+## Decisiones de diseño
+
+| Decisión | Motivo y costo |
+|---|---|
+| Arquitectura limpia con puertos y adaptadores | Los casos de uso concentran las reglas de negocio y se prueban sin AWS. Cada contexto posee su tabla y su despliegue, lo cual exige contratos de integración y operación por servicio. |
+| Una autoridad de inventario | Inventory aplica escrituras condicionales sobre entradas, reservas, contadores y auditoría en transacciones DynamoDB. Las consultas de órdenes dependen de Inventory para confirmar el estado actual. |
+| Outbox transaccional y SQS Standard | La orden y el comando se guardan juntos. Orders responde `202` tras confirmar el encolado de compras y cortesías. Los consumidores deduplican entregas y verifican versiones. Si Orders devuelve `503 ORDER_ENQUEUE_UNAVAILABLE`, se reintenta con el mismo cuerpo y la misma clave. |
+| Vencimiento de 600 segundos | El plazo se fija al guardar la orden. Una reserva genera un mensaje diferido y se recupera mediante un barrido cada minuto. El consumidor valida el plazo y el estado aun si el mensaje se retrasa o llega más de una vez. |
+| Escalado por rol y mínimo privilegio | En AWS las APIs y los consumidores escalan por separado. Orders API puede enviar únicamente a `inventory-commands`. Los consumidores reciben y publican en las colas de su contexto según su función. |
+
+`RESERVED` y `PENDING_CONFIRMATION` ocupan capacidad. `SOLD` es una venta final y `COMPLIMENTARY` es una asignación final que se cuenta por separado. La consulta de disponibilidad devuelve los contadores del inventario. La reserva definitiva se decide con las condiciones de escritura de Inventory.
+
+## Sustentación y operación
+
+- [Arquitectura y diagramas](docs/arquitectura.md)
+- [Operación y pruebas locales](docs/operacion.md)
+- [Resultados por requisito](docs/evidencia.md)
+- Contratos [HTTP](contracts/openapi.json) y [SQS](contracts/asyncapi.json)
+- Infraestructura, seguridad, costos y operación en AWS en el `README.md` del repositorio independiente `ticketing-infra`
+
+El entorno local comprobó concurrencia, recuperación y vencimiento. El despliegue AWS, la carga sostenida y el costo real requieren medición en AWS. Para producción se debe verificar el aislamiento de red y permisos, evaluar TLS en los saltos privados y ajustar el escalado con métricas de demanda.

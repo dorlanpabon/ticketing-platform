@@ -1,6 +1,6 @@
 # Ejecución de rendimiento
 
-La metodología y los límites están en [docs/performance.md](../../docs/performance.md).
+Esta ejecución mide carga adicional. La prueba de concurrencia verificada está en [la evidencia local](../../docs/evidencia.md).
 
 ```powershell
 # No envía tráfico ni crea datos.

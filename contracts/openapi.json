@@ -3,7 +3,7 @@
   "info": {
     "title": "Ticketing API",
     "version": "1.0.0",
-    "description": "Implemented Catalog, Orders and Inventory HTTP contracts. Public operations authenticate a customer or admin. AWS API Gateway validates JWTs and overwrites trusted identity headers; local mode accepts only the documented synthetic bearer identities. Internal Inventory routes rely on private network access and are not API Gateway routes. Order creation returns 202 after durable persistence and confirmed SQS enqueue. Inventory allocates tickets asynchronously. No payments, manual cancellation, refunds or transitions out of SOLD/COMPLIMENTARY are implemented. The 16 KiB body limit currently maps to 400 in Catalog/Orders and 413 in Inventory. See docs/contracts.md for source mapping, limitations and PDF traceability."
+    "description": "Contratos HTTP de Catalog, Orders e Inventory. Las operaciones públicas autentican al comprador o al administrador. API Gateway valida JWT y asigna las cabeceras de identidad. En local se usan identidades de prueba. Las rutas internas de Inventory dependen de la red privada. Orders devuelve 202 después de guardar la solicitud y confirmar el envío a SQS. Inventory asigna las entradas de forma asíncrona. SOLD y COMPLIMENTARY son estados finales. El límite de 16 KiB devuelve 400 en Catalog y Orders y 413 en Inventory. La arquitectura y sus límites están en docs/arquitectura.md."
   },
   "servers": [
     {

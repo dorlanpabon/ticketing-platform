@@ -20,7 +20,7 @@ test('rejects external destinations and missing collection stages without HTTP',
 
 test('first request always replaces a persisted runId and clears stale state', () => {
   const values = new Map([['runId', 'old-run'], ['orderId', 'old-order']]);
-  const local = new Map([['poll_02 Wait for ACTIVE', 119]]);
+  const local = new Map([[`poll_${ITEMS[1]}`, 119]]);
   let generated = 0;
   const context = { pm: {
     info: { requestName: ITEMS[0] },
