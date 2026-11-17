@@ -1,0 +1,20 @@
+dependencies {
+    testImplementation project(':usecase')
+    implementation 'tools.jackson.core:jackson-databind'
+    implementation 'software.amazon.awssdk:dynamodb-enhanced'
+    implementation 'org.reactivecommons.utils:object-mapper-api:0.1.0'
+    testImplementation 'org.reactivecommons.utils:object-mapper:0.1.0'
+}
+
+tasks.named('test') {
+    useJUnitPlatform { excludeTags 'integration' }
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Validates transactions against a running DynamoDB Local endpoint.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'integration' }
+    shouldRunAfter tasks.named('test')
+}

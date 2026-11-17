@@ -1,0 +1,1165 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "Ticketing asynchronous contracts",
+    "version": "1.0.0",
+    "description": "Implemented contracts across the three service owners, SQS Standard and the recovery scheduler. At-least-once delivery permits duplicates and reordering; only conditional durable state transitions provide idempotent business effects. This document does not claim exactly-once delivery or hard real-time timer execution."
+  },
+  "defaultContentType": "application/json",
+  "channels": {
+    "inventory-commands": {
+      "address": "inventory-commands",
+      "messages": {
+        "ProvisionInventory": {
+          "$ref": "#/components/messages/ProvisionInventory"
+        },
+        "PurchaseRequested": {
+          "$ref": "#/components/messages/PurchaseRequested"
+        },
+        "ConfirmPurchase": {
+          "$ref": "#/components/messages/ConfirmPurchase"
+        },
+        "ComplimentaryRequested": {
+          "$ref": "#/components/messages/ComplimentaryRequested"
+        },
+        "EventCreated": {
+          "$ref": "#/components/messages/EventCreated"
+        }
+      },
+      "description": "SQS Standard. Outbox commit before publish. Delete only after durable handling; DLQ after 5 receives. Versioned snapshots never apply older state. Addresses are logical names; AWS adds the Terraform environment prefix. Queue redrive uses a separate DLQ after five receives; preserve application message IDs during manual redrive.",
+      "servers": [
+        {
+          "$ref": "#/servers/local"
+        },
+        {
+          "$ref": "#/servers/aws"
+        }
+      ],
+      "x-queue-url-environment": "INVENTORY_COMMANDS_QUEUE_URL",
+      "x-delivery": {
+        "kind": "SQS Standard",
+        "atLeastOnce": true,
+        "orderingGuaranteed": false,
+        "longPollSeconds": 20,
+        "visibilityTimeoutSeconds": 60,
+        "maxReceiveCount": 5,
+        "messageRetentionSeconds": 345600,
+        "deadLetterRetentionSeconds": 1209600,
+        "maxMessageBytes": 262144,
+        "deadLetterQueue": "inventory-commands-dlq"
+      }
+    },
+    "order-events": {
+      "address": "order-events",
+      "messages": {
+        "ReservationStateChanged": {
+          "$ref": "#/components/messages/ReservationStateChanged"
+        }
+      },
+      "description": "SQS Standard. Outbox commit before publish. Delete only after durable handling; DLQ after 5 receives. Versioned snapshots never apply older state. Addresses are logical names; AWS adds the Terraform environment prefix. Queue redrive uses a separate DLQ after five receives; preserve application message IDs during manual redrive.",
+      "servers": [
+        {
+          "$ref": "#/servers/local"
+        },
+        {
+          "$ref": "#/servers/aws"
+        }
+      ],
+      "x-queue-url-environment": "ORDER_EVENTS_QUEUE_URL",
+      "x-delivery": {
+        "kind": "SQS Standard",
+        "atLeastOnce": true,
+        "orderingGuaranteed": false,
+        "longPollSeconds": 20,
+        "visibilityTimeoutSeconds": 60,
+        "maxReceiveCount": 5,
+        "messageRetentionSeconds": 345600,
+        "deadLetterRetentionSeconds": 1209600,
+        "maxMessageBytes": 262144,
+        "deadLetterQueue": "order-events-dlq"
+      }
+    },
+    "catalog-events": {
+      "address": "catalog-events",
+      "messages": {
+        "InventoryReady": {
+          "$ref": "#/components/messages/InventoryReady"
+        }
+      },
+      "description": "SQS Standard. Outbox commit before publish. Delete only after durable handling; DLQ after 5 receives. Versioned snapshots never apply older state. Addresses are logical names; AWS adds the Terraform environment prefix. Queue redrive uses a separate DLQ after five receives; preserve application message IDs during manual redrive.",
+      "servers": [
+        {
+          "$ref": "#/servers/local"
+        },
+        {
+          "$ref": "#/servers/aws"
+        }
+      ],
+      "x-queue-url-environment": "CATALOG_EVENTS_QUEUE_URL",
+      "x-delivery": {
+        "kind": "SQS Standard",
+        "atLeastOnce": true,
+        "orderingGuaranteed": false,
+        "longPollSeconds": 20,
+        "visibilityTimeoutSeconds": 60,
+        "maxReceiveCount": 5,
+        "messageRetentionSeconds": 345600,
+        "deadLetterRetentionSeconds": 1209600,
+        "maxMessageBytes": 262144,
+        "deadLetterQueue": "catalog-events-dlq"
+      }
+    },
+    "inventory-expirations": {
+      "address": "inventory-expirations",
+      "messages": {
+        "ExpireReservation": {
+          "$ref": "#/components/messages/ExpireReservation"
+        },
+        "SweepExpiredReservations": {
+          "$ref": "#/components/messages/SweepExpiredReservations"
+        }
+      },
+      "description": "Dedicated timer and recovery queue, consumed independently from purchase/provisioning commands with bounded concurrency. Physical delivery may be late under outage/backlog; persisted deadline validation and lazy whole-reservation reclamation remain authoritative. Addresses are logical names; AWS adds the Terraform environment prefix. Queue redrive uses a separate DLQ after five receives; preserve application message IDs during manual redrive.",
+      "servers": [
+        {
+          "$ref": "#/servers/local"
+        },
+        {
+          "$ref": "#/servers/aws"
+        }
+      ],
+      "x-queue-url-environment": "INVENTORY_EXPIRATIONS_QUEUE_URL",
+      "x-delivery": {
+        "kind": "SQS Standard",
+        "atLeastOnce": true,
+        "orderingGuaranteed": false,
+        "longPollSeconds": 20,
+        "visibilityTimeoutSeconds": 60,
+        "maxReceiveCount": 5,
+        "messageRetentionSeconds": 345600,
+        "deadLetterRetentionSeconds": 1209600,
+        "maxMessageBytes": 262144,
+        "deadLetterQueue": "inventory-expirations-dlq"
+      }
+    }
+  },
+  "operations": {
+    "receive-inventory-commands": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/inventory-commands"
+      }
+    },
+    "receive-order-events": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/order-events"
+      }
+    },
+    "receive-catalog-events": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/catalog-events"
+      }
+    },
+    "receive-inventory-expirations": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/inventory-expirations"
+      },
+      "summary": "Inventory timer consumer; application idempotency and durable ACK boundaries apply"
+    },
+    "catalog-provision-inventory": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/inventory-commands"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/inventory-commands/messages/ProvisionInventory"
+        }
+      ],
+      "summary": "Catalog outbox",
+      "x-producer": "Catalog outbox"
+    },
+    "orders-request-allocation": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/inventory-commands"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/inventory-commands/messages/PurchaseRequested"
+        },
+        {
+          "$ref": "#/channels/inventory-commands/messages/ComplimentaryRequested"
+        },
+        {
+          "$ref": "#/channels/inventory-commands/messages/ConfirmPurchase"
+        }
+      ],
+      "summary": "Orders outbox",
+      "x-producer": "Orders outbox"
+    },
+    "inventory-publish-order-state": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/order-events"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/order-events/messages/ReservationStateChanged"
+        }
+      ],
+      "summary": "Inventory outbox",
+      "x-producer": "Inventory outbox"
+    },
+    "inventory-publish-ready": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/catalog-events"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/catalog-events/messages/InventoryReady"
+        }
+      ],
+      "summary": "Inventory outbox",
+      "x-producer": "Inventory outbox"
+    },
+    "inventory-schedule-expiry": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/inventory-expirations"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/inventory-expirations/messages/ExpireReservation"
+        }
+      ],
+      "summary": "Inventory outbox",
+      "x-producer": "Inventory outbox"
+    },
+    "scheduler-request-recovery": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/inventory-expirations"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/inventory-expirations/messages/SweepExpiredReservations"
+        }
+      ],
+      "summary": "EventBridge Scheduler or single local recovery emitter",
+      "x-producer": "EventBridge Scheduler or single local recovery emitter",
+      "x-scheduler": {
+        "scheduleExpression": "rate(1 minute)",
+        "flexibleWindow": "OFF",
+        "maximumEventAgeSeconds": 120,
+        "maximumRetryAttempts": 2,
+        "deliveryDeadLetterQueue": "<terraform-name>-expiry-scheduler-dlq",
+        "messageIdTemplate": "<aws.scheduler.execution-id>",
+        "occurredAtTemplate": "<aws.scheduler.scheduled-time>"
+      }
+    }
+  },
+  "components": {
+    "messages": {
+      "ProvisionInventory": {
+        "name": "ProvisionInventory",
+        "title": "ProvisionInventory",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "ProvisionInventory",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "capacity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "eventId",
+                "capacity"
+              ]
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "PurchaseRequested": {
+        "name": "PurchaseRequested",
+        "title": "PurchaseRequested",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "PurchaseRequested",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "ticketIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "uniqueItems": true
+                },
+                "requestedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "type": {
+                  "type": "string",
+                  "const": "PURCHASE"
+                },
+                "actorId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              "required": [
+                "orderId",
+                "eventId",
+                "customerId",
+                "ticketIds",
+                "requestedAt",
+                "expiresAt",
+                "type",
+                "actorId",
+                "reason"
+              ]
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "ComplimentaryRequested": {
+        "name": "ComplimentaryRequested",
+        "title": "ComplimentaryRequested",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "ComplimentaryRequested",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "ticketIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "uniqueItems": true
+                },
+                "requestedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "type": {
+                  "type": "string",
+                  "const": "COMPLIMENTARY"
+                },
+                "actorId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 500,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "orderId",
+                "eventId",
+                "customerId",
+                "ticketIds",
+                "requestedAt",
+                "expiresAt",
+                "type",
+                "actorId",
+                "reason"
+              ]
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "ConfirmPurchase": {
+        "name": "ConfirmPurchase",
+        "title": "ConfirmPurchase",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "ConfirmPurchase",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "commandId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "orderId",
+                "customerId",
+                "commandId"
+              ]
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "InventoryReady": {
+        "name": "InventoryReady",
+        "title": "InventoryReady",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "InventoryReady",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "capacity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "eventId",
+                "capacity"
+              ]
+            },
+            "aggregateVersion": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload",
+            "aggregateVersion"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "ReservationStateChanged": {
+        "name": "ReservationStateChanged",
+        "title": "ReservationStateChanged",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "const": "ReservationStateChanged",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "customerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "AVAILABLE",
+                    "RESERVED",
+                    "PENDING_CONFIRMATION",
+                    "SOLD",
+                    "COMPLIMENTARY"
+                  ]
+                },
+                "resolution": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "TICKETS_UNAVAILABLE",
+                    "RESERVATION_EXPIRED"
+                  ]
+                },
+                "inventoryVersion": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "requestedTicketIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "uniqueItems": true
+                },
+                "activeTicketIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?:[1-9][0-9]{0,4}|100000)$"
+                  },
+                  "maxItems": 10,
+                  "uniqueItems": true
+                },
+                "requestedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "PURCHASE",
+                    "COMPLIMENTARY"
+                  ]
+                },
+                "actorId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "confirmationId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "orderId",
+                "eventId",
+                "customerId",
+                "status",
+                "resolution",
+                "inventoryVersion",
+                "requestedTicketIds",
+                "activeTicketIds",
+                "requestedAt",
+                "expiresAt",
+                "type",
+                "actorId",
+                "reason",
+                "confirmationId"
+              ]
+            },
+            "aggregateVersion": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload",
+            "aggregateVersion"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        },
+        "description": "Full Inventory Reservation snapshot. Orders checks aggregateId, assignment identity, original deadline and monotonic inventoryVersion. Newer snapshots cannot reverse a final state. Includes nullable actorId/reason/confirmationId and requestedAt/type, not only the Orders projection fields."
+      },
+      "EventCreated": {
+        "name": "EventCreated",
+        "title": "EventCreated",
+        "description": "Compatibility alias accepted by Inventory. The current Catalog producer emits ProvisionInventory, not this alias.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "EventCreated"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "eventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "capacity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "eventId",
+                "capacity"
+              ]
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "ExpireReservation": {
+        "name": "ExpireReservation",
+        "title": "ExpireReservation",
+        "description": "Inventory writes this timer outbox atomically with a successful PURCHASE reservation. Sender uses DelaySeconds=min(600,max(0,ceil(expiresAt-currentTime))) on every publication attempt. Message body and deadline remain unchanged on retries. Inventory compares the persisted deadline, expires only held states, and leaves SOLD/COMPLIMENTARY/final old reservations unchanged. Early delivery changes message visibility using the same deadline and is not acknowledged.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "ExpireReservation"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "orderId",
+                "expiresAt"
+              ],
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[A-Za-z0-9:_-]+$"
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "aggregateVersion": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload",
+            "aggregateVersion"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        },
+        "examples": [
+          {
+            "name": "immutable-ten-minute-deadline",
+            "payload": {
+              "messageId": "expiry:order-example",
+              "type": "ExpireReservation",
+              "schemaVersion": 1,
+              "aggregateVersion": 1,
+              "aggregateId": "order-example",
+              "correlationId": "order-example",
+              "causationId": "order-example",
+              "occurredAt": "2026-11-16T12:00:00Z",
+              "payload": {
+                "orderId": "order-example",
+                "expiresAt": "2026-11-16T12:10:00Z"
+              }
+            }
+          }
+        ]
+      },
+      "SweepExpiredReservations": {
+        "name": "SweepExpiredReservations",
+        "title": "SweepExpiredReservations",
+        "description": "Periodic recovery, not the primary timer. AWS EventBridge Scheduler sends every minute; a single local recovery-tick process sends the same message type to the same queue. No Lambda is involved. Only the winner of the durable global recovery lease queries expiry partitions; duplicates during the cooldown perform no sweep. Pages continue in batches within a 45-second execution budget; later scheduled messages revisit remaining work.",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "messageId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "SweepExpiredReservations"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "aggregateId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "causationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "messageId",
+            "type",
+            "schemaVersion",
+            "aggregateId",
+            "correlationId",
+            "causationId",
+            "occurredAt",
+            "payload"
+          ]
+        },
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        },
+        "examples": [
+          {
+            "name": "aws-scheduler-expanded-context",
+            "payload": {
+              "messageId": "scheduler-execution-example",
+              "type": "SweepExpiredReservations",
+              "schemaVersion": 1,
+              "aggregateId": "inventory-expiry",
+              "correlationId": "scheduler-execution-example",
+              "causationId": "scheduler",
+              "occurredAt": "2026-11-16T12:00:00Z",
+              "payload": {}
+            }
+          },
+          {
+            "name": "local-recovery-emitter",
+            "payload": {
+              "messageId": "local-tick-example",
+              "type": "SweepExpiredReservations",
+              "schemaVersion": 1,
+              "aggregateId": "inventory-maintenance",
+              "correlationId": "local-tick-example",
+              "causationId": "local-tick-example",
+              "occurredAt": "2026-11-16T12:00:00Z",
+              "payload": {}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "servers": {
+    "local": {
+      "host": "localhost:4566",
+      "protocol": "sqs",
+      "description": "LocalStack SQS endpoint from the host. Containers use http://localstack:4566. Queue URLs use /queue/us-east-1/000000000000/<queue> and are supplied in environment variables."
+    },
+    "aws": {
+      "host": "sqs.{region}.amazonaws.com",
+      "protocol": "sqs",
+      "description": "AWS SQS over TLS. Terraform outputs actual prefixed queue URLs; AWS role credentials remain outside message bodies.",
+      "variables": {
+        "region": {
+          "default": "us-east-1",
+          "description": "AWS_REGION of the deployment"
+        }
+      }
+    }
+  }
+}

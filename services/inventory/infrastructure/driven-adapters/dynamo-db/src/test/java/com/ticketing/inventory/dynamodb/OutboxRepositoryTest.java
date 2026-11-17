@@ -1,0 +1,100 @@
+package com.ticketing.inventory.dynamodb;
+
+import static com.ticketing.inventory.dynamodb.ItemAttributes.n;
+import static com.ticketing.inventory.dynamodb.ItemAttributes.s;
+import static com.ticketing.inventory.dynamodb.ItemAttributes.string;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.ticketing.inventory.model.OutboxMessage;
+import com.ticketing.inventory.model.WorkLease;
+
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import reactor.test.StepVerifier;
+
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemResponse;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
+class OutboxRepositoryTest {
+    @Test
+    void queriesDueMessagesAndLeasesThenMarksOnlyItsOwnLease() {
+        var client = mock(DynamoDbAsyncClient.class);
+        var store = new OutboxRepository(client, "inventory");
+        var now = Instant.parse("2026-11-16T12:00:00Z");
+        when(client.query(any(QueryRequest.class))).thenAnswer(call -> {
+            QueryRequest request = call.getArgument(0);
+            var items = "OUTBOX#0".equals(string(request.expressionAttributeValues(), ":pk"))
+                ? List.of(Map.of("pk", s("OUTBOX#event"), "destination", s("ORDERS"), "body", s("{}")))
+                : List.<Map<String, AttributeValue>>of();
+            return CompletableFuture.completedFuture(QueryResponse.builder().items(items).build());
+        });
+        StepVerifier.create(store.pending(now, 10))
+            .expectNext(new OutboxMessage("OUTBOX#event", "ORDERS", "{}", null)).verifyComplete();
+        when(client.updateItem(any(UpdateItemRequest.class)))
+            .thenReturn(CompletableFuture.completedFuture(UpdateItemResponse.builder().build()));
+        var message = new OutboxMessage("OUTBOX#event", "ORDERS", "{}", null);
+        StepVerifier.create(store.claim(message, now).flatMap(claimed -> {
+            assertNotNull(claimed.leaseId());
+            return store.sent(claimed, now);
+        })).verifyComplete();
+        var capture = ArgumentCaptor.forClass(UpdateItemRequest.class);
+        verify(client, times(2)).updateItem(capture.capture());
+        assertTrue(capture.getAllValues().getFirst().conditionExpression().contains("leaseUntil <= :now"));
+        assertEquals("leaseId = :lease", capture.getAllValues().getLast().conditionExpression());
+        assertTrue(capture.getAllValues().getLast().updateExpression().contains("REMOVE gsi1pk, gsi1sk"));
+        when(client.updateItem(any(UpdateItemRequest.class)))
+            .thenReturn(CompletableFuture.failedFuture(ConditionalCheckFailedException.builder().build()));
+        StepVerifier.create(store.claim(message, now)).verifyComplete();
+    }
+
+    @Test
+    void coordinatorCachesOnlyItsOwnedLeaseAndFollowerUsesPersistedDeadline() {
+        var client = mock(DynamoDbAsyncClient.class);
+        var store = new OutboxRepository(client, "inventory");
+        var now = Instant.parse("2026-11-16T12:00:00Z");
+        when(client.updateItem(any(UpdateItemRequest.class)))
+            .thenReturn(CompletableFuture.completedFuture(UpdateItemResponse.builder().build()));
+        StepVerifier.create(store.coordinate("owner", now))
+            .expectNext(new WorkLease(true, now.plusSeconds(30))).verifyComplete();
+        StepVerifier.create(store.coordinate("owner", now.plusSeconds(9)))
+            .expectNext(new WorkLease(true, now.plusSeconds(30))).verifyComplete();
+        verify(client, times(1)).updateItem(any(UpdateItemRequest.class));
+        StepVerifier.create(store.coordinate("owner", now.plusSeconds(10)))
+            .expectNext(new WorkLease(true, now.plusSeconds(40))).verifyComplete();
+        when(client.updateItem(any(UpdateItemRequest.class)))
+            .thenReturn(CompletableFuture.failedFuture(ConditionalCheckFailedException.builder().build()));
+        when(client.getItem(any(GetItemRequest.class)))
+            .thenReturn(CompletableFuture.completedFuture(GetItemResponse.builder()
+                .item(Map.of("leaseUntil", n(now.plusSeconds(40).toEpochMilli()), "nextRunAt", n(0)))
+                .build()));
+        StepVerifier.create(store.coordinate("follower", now.plusSeconds(11)))
+            .expectNext(new WorkLease(false, now.plusSeconds(40))).verifyComplete();
+        verify(client, never()).query(any(QueryRequest.class));
+        when(client.getItem(any(GetItemRequest.class)))
+            .thenReturn(CompletableFuture.completedFuture(GetItemResponse.builder().build()));
+        StepVerifier.create(store.coordinate("follower", now))
+            .expectNext(new WorkLease(false, now.plusMillis(500))).verifyComplete();
+    }
+}

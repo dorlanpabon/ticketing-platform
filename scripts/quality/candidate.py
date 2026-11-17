@@ -7,6 +7,7 @@ deploys AWS resources. Missing acceptance tests block candidate publication.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,20 +20,129 @@ from artifacts import api, download, verified_run
 from quality import QualityError, ROOT, SERVICES, SHA, check_coverage, content_hash, execute, git, tool, verify_manifest, write_json
 
 
+def acceptance_report(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Acceptance evidence must be readable JSON") from error
+    if not isinstance(value, dict):
+        raise QualityError("Acceptance evidence must be a JSON object")
+    return value
+
+
+def acceptance_child(name: str, value: dict) -> None:
+    if value.get("status") != "passed" or "error" in value:
+        raise QualityError(f"Acceptance child did not pass: {name}")
+    strings = {"integration": ("eventId", "orderId"), "concurrency": ("eventId",),
+               "recovery": ("eventId", "orderId", "scenario"), "expiry": ("eventId", "orderId", "expiresAt")}
+    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in strings.get(name, ())):
+        raise QualityError(f"Acceptance child has missing identity fields: {name}")
+    expected = {
+        "concurrency": {"buyers": 100, "winners": 1, "rejected": 99},
+        "recovery": {"deadlinePreserved": True}, "containerSmoke": {"readiness": "UP"},
+        "expiry": {"periodicRecoveryStopped": True, "httpLazyExpiryDisabled": True,
+                   "durableExpiredState": "RESERVATION_EXPIRED", "soldTicketPreserved": True},
+    }
+    if any(type(value.get(key)) is not type(required) or value[key] != required
+           for key, required in expected.get(name, {}).items()):
+        raise QualityError(f"Acceptance child has invalid assertions: {name}")
+    lists = {"integration": ("assertions", {"durable202", "idempotency", "deadline", "owner", "confirmation", "courtesy", "all-or-none", "counters"}),
+             "architecture": ("rules", {"domain-dependencies", "bounded-context-isolation", "nonblocking-reactive-code"}),
+             "containerSmoke": ("services", {"catalog", "orders", "inventory"})}
+    if name in lists:
+        key, required = lists[name]
+        items = value.get(key)
+        if not isinstance(items, list) or any(not isinstance(item, str) for item in items) or set(items) != required:
+            raise QualityError(f"Acceptance child has incomplete checks: {name}")
+    if name == "recovery" and (type(value.get("consumerReplicas")) is not int or value["consumerReplicas"] < 2):
+        raise QualityError("Recovery evidence requires at least two consumers")
+    if name == "expiry":
+        lag = value.get("timerProcessingLagSeconds")
+        if type(lag) not in (int, float) or not math.isfinite(lag) or lag < 0:
+            raise QualityError("Expiry evidence has invalid timer lag")
+    if name == "architecture":
+        services = value.get("services")
+        if not isinstance(services, dict) or set(services) != {"catalog", "orders", "inventory"}:
+            raise QualityError("Architecture evidence requires all three services")
+        for report in services.values():
+            if not isinstance(report, dict) or type(report.get("tests")) is not int or report["tests"] != 3 \
+                    or not isinstance(report.get("report"), str) or not report["report"] \
+                    or not isinstance(report.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", report["sha256"]):
+                raise QualityError("Architecture evidence has an incomplete test report")
+
+
 def acceptance_evidence(path: Path, root: Path, sha: str, tree: str) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = acceptance_report(path)
     if value.get("commit") != sha or value.get("tree") != tree:
         raise QualityError("Acceptance report belongs to a different candidate")
     if value.get("dirty") is not False:
         raise QualityError("Acceptance evidence requires a clean candidate tree")
+    if not isinstance(value.get("checks"), dict):
+        raise QualityError("Acceptance evidence requires a checks object")
+    root = root.resolve()
     result = {}
-    for name in ("integration", "architecture", "concurrency", "recovery", "containerSmoke"):
-        check = value.get("checks", {}).get(name, {})
-        report = (root / check.get("evidence", "")).resolve()
-        if check.get("status") != "passed" or not report.is_relative_to(root) or not report.is_file() or not report.stat().st_size:
+    for name in ("integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry"):
+        check = value["checks"].get(name)
+        if not isinstance(check, dict) or check.get("status") != "passed" \
+                or not isinstance(check.get("evidence"), str) or not check["evidence"]:
             raise QualityError(f"Missing actual acceptance evidence: {name}")
+        report = (root / check["evidence"]).resolve()
+        if not report.is_relative_to(root) or not report.is_file() or not report.stat().st_size:
+            raise QualityError(f"Missing actual acceptance evidence: {name}")
+        acceptance_child(name, acceptance_report(report))
         result[name] = {"path": report.relative_to(root).as_posix(), "sha256": hashlib.sha256(report.read_bytes()).hexdigest()}
     return result
+
+
+def scan_image_evidence(trivy: str, image: str, report: Path, sbom: Path) -> None:
+    # A successful exit must not reuse stale evidence or hide missing Java analysis.
+    report.unlink(missing_ok=True)
+    sbom.unlink(missing_ok=True)
+    execute([trivy, "image", "--cache-backend", "memory", "--list-all-pkgs", "--config", "", "--ignorefile", "",
+             "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--scanners", "vuln",
+             "--format", "json", "--output", str(report), image], timeout=900)
+    try:
+        value = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Image scan did not produce a readable JSON report") from error
+    results = value.get("Results") if isinstance(value, dict) else None
+    if not isinstance(results, list) or not results or any(not isinstance(item, dict) for item in results):
+        raise QualityError("Image scan has no complete results")
+    inventories = set()
+    for item in results:
+        kind = None
+        if item.get("Class") == "os-pkgs":
+            kind = "os"
+        elif item.get("Class") == "lang-pkgs" and item.get("Type") == "jar":
+            kind = "java"
+        if kind:
+            packages = item.get("Packages")
+            if not isinstance(packages, list) or not packages or any(
+                    not isinstance(package, dict) or any(not isinstance(package.get(key), str) or not package[key] for key in ("Name", "Version"))
+                    for package in packages):
+                raise QualityError(f"Image scan has an incomplete {kind} package inventory")
+            inventories.add(kind)
+        vulnerabilities = item.get("Vulnerabilities", [])
+        if vulnerabilities is None:
+            vulnerabilities = []
+        if not isinstance(vulnerabilities, list) or any(not isinstance(finding, dict) or finding.get("Severity") not in
+                ("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL") for finding in vulnerabilities):
+            raise QualityError("Image scan has malformed vulnerability results")
+        if any(finding["Severity"] in ("HIGH", "CRITICAL") for finding in vulnerabilities):
+            raise QualityError("Image scan contains HIGH/CRITICAL vulnerabilities")
+    if inventories != {"os", "java"}:
+        raise QualityError("Image scan requires both OS and Java package inventories")
+    execute([trivy, "convert", "--config", "", "--ignorefile", "", "--format", "cyclonedx",
+             "--output", str(sbom), str(report)], timeout=900)
+    try:
+        value = json.loads(sbom.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise QualityError("Image scan did not produce a readable CycloneDX SBOM") from error
+    components = value.get("components") if isinstance(value, dict) else None
+    if not isinstance(value, dict) or value.get("bomFormat") != "CycloneDX" or not isinstance(components, list) or not components or any(
+            not isinstance(component, dict) or any(not isinstance(component.get(key), str) or not component[key] for key in ("name", "type"))
+            for component in components):
+        raise QualityError("CycloneDX SBOM has no valid component inventory")
 
 
 def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
@@ -85,7 +195,7 @@ def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
         environment = os.environ.copy()
         for key in ("GH_TOKEN", "GITHUB_TOKEN", "SONAR_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
             environment.pop(key, None)
-        compose = ["docker", "compose", "-f", str(ROOT / "compose.yaml")]
+        compose = ["docker", "compose", "-f", str(ROOT / "docker-compose.yml")]
         services = ["catalog", "orders", "inventory", "catalog-worker", "orders-worker", "inventory-worker"]
         try:
             execute([*compose, "up", "-d", "--build", "--wait", "--wait-timeout", "240",
@@ -127,20 +237,19 @@ def build_candidate(run_id: int | None, infra_sha: str | None) -> None:
                 execute(["docker", "build", "--label", "org.opencontainers.image.revision=" + sha,
                          "--label", "org.opencontainers.image.source=https://github.com/" + repo,
                          "--tag", tag, str(context_path)], timeout=900)
-            execute([trivy, "image", "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--scanners", "vuln",
-                     "--format", "json", "--output", str(output / f"{service}-image-security.json"), tag], timeout=900)
+            scan_image_evidence(trivy, tag, output / f"{service}-image-security.json", output / f"{service}-sbom.json")
             execute(["docker", "push", tag], timeout=900)
             digests = json.loads(execute(["docker", "image", "inspect", tag, "--format", "{{json .RepoDigests}}"] ).stdout)
             matching = [item for item in digests if item.startswith(tag.rsplit(":", 1)[0] + "@sha256:")]
             if len(matching) != 1:
                 raise QualityError("Registry did not establish a unique immutable image digest")
             images[service] = matching[0]
-            execute([trivy, "image", "--format", "cyclonedx", "--output", str(output / f"{service}-sbom.json"), matching[0]], timeout=900)
-        checks = {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "static", "iac", "security", "sbom")}
+        checks = {name: "passed" for name in ("unit", "integration", "architecture", "concurrency", "recovery", "containerSmoke", "expiry", "static", "configuration", "security", "sbom")}
         manifest = {"schemaVersion": 1, "sourceCommit": sha, "tree": tree, "images": images, "sonar": sonar,
                     "checks": checks, "policyHash": policy_hash, "qualityRunId": run_id,
                     "acceptanceEvidence": proofs, "configurationScope": "Application Dockerfiles and workflows; Terraform is owned by ticketing-infra",
-                    "infraGitSha": infra_sha, "validationEnvironment": "local containers; not an AWS deployment"}
+                    "infraGitSha": infra_sha, "infrastructureValidation": "Owned by the independent infrastructure repository; not asserted by this application manifest",
+                    "validationEnvironment": "local containers; not an AWS deployment"}
         verify_manifest(manifest, tree, sha)
         write_json(output / "manifest.json", manifest)
         print(json.dumps({"candidate": sha, "images": images, "awsDeployed": False}))

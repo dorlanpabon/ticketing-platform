@@ -1,0 +1,49 @@
+package com.ticketing.orders.dynamodb.config;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedAsyncClient;
+import software.amazon.awssdk.metrics.MetricPublisher;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+
+@ExtendWith(MockitoExtension.class)
+class PersistenceConfigTest {
+
+    @Mock
+    private MetricPublisher publisher;
+
+    @Mock
+    private DynamoDbAsyncClient dynamoDbAsyncClient;
+
+    private final PersistenceConfig dynamoDBConfig = new PersistenceConfig();
+
+    @Test
+    void testAmazonDynamoDB() {
+
+        DynamoDbAsyncClient result = dynamoDBConfig.amazonDynamoDB("http://aws.dynamo.test", "region",
+            publisher);
+
+        assertNotNull(result);
+    }
+
+    @Test
+    void testAmazonDynamoDBAsync() {
+
+        DynamoDbAsyncClient result = dynamoDBConfig.amazonDynamoDBAsync(publisher, "region");
+
+        assertNotNull(result);
+    }
+
+    @Test
+    void testGetDynamoDbEnhancedAsyncClient() {
+        DynamoDbEnhancedAsyncClient result = dynamoDBConfig
+            .getDynamoDbEnhancedAsyncClient(dynamoDbAsyncClient);
+
+        assertNotNull(result);
+    }
+}
