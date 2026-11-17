@@ -4,10 +4,10 @@ API reactiva para publicar eventos, reservar entradas numeradas, confirmar compr
 
 ## Instalación y arranque local
 
-1. Instala Docker con Compose v2 y activa los contenedores Linux. En Windows puedes usar Docker Desktop. La primera compilación requiere conexión a Internet para descargar imágenes y dependencias.
-2. Desde la raíz de `ticketing-platform`, verifica la configuración y levanta el entorno. Docker incluye Java y Gradle en la compilación. Para ejecutar pruebas Gradle fuera de Docker se requiere JDK 25. Los scripts de verificación local requieren Python 3 y las solicitudes de ejemplo usan PowerShell.
+1. Instala Docker con Compose v2 y soporte para contenedores Linux. La primera compilación requiere acceso a Internet para descargar imágenes y dependencias.
+2. Desde la raíz de `ticketing-platform`, verifica la configuración y levanta el entorno. Docker incluye Java y Gradle en la compilación. Las pruebas Gradle fuera de Docker requieren JDK 25. Los scripts de verificación local requieren Python 3 y los ejemplos de la API usan `curl` en Bash.
 
-```powershell
+```bash
 docker compose version
 docker compose config --quiet
 docker compose up --build --wait
@@ -16,10 +16,10 @@ docker compose ps
 
 3. Cuando las APIs y los consumidores estén listos, comprueba los puntos de salud y sigue los ejemplos de la sección siguiente.
 
-```powershell
-curl.exe --fail http://localhost:18080/actuator/health/readiness
-curl.exe --fail http://localhost:18081/actuator/health/readiness
-curl.exe --fail http://localhost:18082/actuator/health/readiness
+```bash
+curl --fail http://localhost:18080/actuator/health/readiness
+curl --fail http://localhost:18081/actuator/health/readiness
+curl --fail http://localhost:18082/actuator/health/readiness
 ```
 
 | Componente | Dirección local |
@@ -36,7 +36,7 @@ Compose inicia una API y un consumidor por contexto con la misma imagen. Los con
 
 Para seguir los registros y detener el entorno, usa los comandos siguientes. Al detenerlo, DynamoDB conserva sus tablas en un volumen. LocalStack Community recrea las colas vacías al reiniciar; el entorno local es para demostración y pruebas.
 
-```powershell
+```bash
 docker compose logs -f --tail 100 catalog orders inventory inventory-worker localstack
 docker compose stop
 ```
@@ -45,70 +45,74 @@ Si levantaste el entorno con `docker compose -p <proyecto>`, repite `-p <proyect
 
 ## Ejemplos de uso de la API
 
-Ejecuta los bloques en la misma sesión de PowerShell. Cada recorrido crea un evento de prueba y claves de idempotencia propias. Las identidades `local-admin`, `local-customer-1` y `local-customer-2` son exclusivas de la configuración local.
+Ejecuta los comandos en orden. Sustituye `EVENT_ID` por el `eventId` de la respuesta, `ORDER_ID` por el `orderId` de la compra y `COURTESY_ID` por el `orderId` de la cortesía. Usa nuevas claves de idempotencia si haces otro recorrido. Los tokens de ejemplo son locales.
 
-```powershell
-$catalog = 'http://localhost:18080/api/v1/events'
-$ordersApi = 'http://localhost:18081/api/v1'
-$orders = "$ordersApi/orders"
-$inventory = 'http://localhost:18082/api/v1/events'
-$admin = @{ Authorization = 'Bearer local-admin' }
-$customer = @{ Authorization = 'Bearer local-customer-1' }
-$runId = [guid]::NewGuid().ToString()
+**Crear y consultar un evento.** La solicitud devuelve `202` y el `eventId`.
 
-function Wait-ForStatus($uri, $headers, $property, $expected) {
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
-    do {
-        $result = Invoke-RestMethod -Uri $uri -Headers $headers
-        if ($result.$property -eq $expected) { return $result }
-        Start-Sleep -Milliseconds 500
-    } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "Se esperaba $expected en $property. Último valor: $($result.$property)."
-}
+```bash
+curl -i http://localhost:18080/api/v1/events \
+  --oauth2-bearer local-admin \
+  -H 'Idempotency-Key: demo-evento-001' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Concierto de prueba","venue":"Teatro local","startsAt":"2030-01-15T19:00:00Z","capacity":20}'
 ```
 
-**Crear y consultar un evento.** La solicitud devuelve `202` y el `eventId`. Cuando Inventory termina de crear las entradas, el evento pasa a `ACTIVE` y aparece al listar eventos.
+Repite la consulta por ID hasta que `status` sea `ACTIVE`. También puedes consultar la primera página del listado.
 
-```powershell
-$eventBody = @{
-    name = 'Concierto de prueba'
-    venue = 'Teatro local'
-    startsAt = [DateTimeOffset]::UtcNow.AddDays(7).ToString('o')
-    capacity = 20
-} | ConvertTo-Json
-$event = Invoke-RestMethod -Method Post -Uri $catalog -ContentType 'application/json' -Body $eventBody -Headers ($admin + @{ 'Idempotency-Key' = "$runId-event" })
-$eventId = $event.eventId
-Wait-ForStatus "$catalog/$eventId" $customer 'status' 'ACTIVE'
-Invoke-RestMethod -Uri "${catalog}?limit=5" -Headers $customer
+```bash
+curl http://localhost:18080/api/v1/events/EVENT_ID \
+  --oauth2-bearer local-customer-1
+
+curl 'http://localhost:18080/api/v1/events?limit=5' \
+  --oauth2-bearer local-customer-1
 ```
 
-**Solicitar, confirmar y consultar una compra.** Orders responde `202` con el `orderId` tras confirmar el envío a SQS. Espera `AWAITING_CONFIRMATION`, confirma antes de `expiresAt` y consulta hasta que el estado sea `SOLD`.
+**Solicitar y confirmar una compra.** Orders responde `202` con el `orderId` cuando SQS confirma la recepción del comando.
 
-```powershell
-$orderBody = @{
-    eventId = $eventId
-    ticketIds = @('1', '2')
-} | ConvertTo-Json
-$purchaseHeaders = $customer + @{ 'Idempotency-Key' = "$runId-purchase" }
-$order = Invoke-RestMethod -Method Post -Uri $orders -ContentType 'application/json' -Body $orderBody -Headers $purchaseHeaders
-$orderUri = "$orders/$($order.orderId)"
-Wait-ForStatus $orderUri $customer 'workflowStatus' 'AWAITING_CONFIRMATION'
-Invoke-RestMethod -Method Post -Uri "$orderUri/confirm" -Headers ($customer + @{ 'Idempotency-Key' = "$runId-confirm" })
-Wait-ForStatus $orderUri $customer 'status' 'SOLD'
+```bash
+curl -i http://localhost:18081/api/v1/orders \
+  --oauth2-bearer local-customer-1 \
+  -H 'Idempotency-Key: demo-compra-001' \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"EVENT_ID","ticketIds":["1","2"]}'
 ```
 
-**Emitir una cortesía y consultar disponibilidad.** Asigna la entrada `3` como administrador. El resultado esperado es `available=17`, `sold=2` y `complimentary=1`.
+Repite este GET hasta que `workflowStatus` sea `AWAITING_CONFIRMATION`.
 
-```powershell
-$courtesyBody = @{
-    eventId = $eventId
-    ticketIds = @('3')
-    beneficiaryId = 'local-customer-1'
-    reason = 'Invitación al evento'
-} | ConvertTo-Json
-$courtesy = Invoke-RestMethod -Method Post -Uri "$ordersApi/admin/complimentary-orders" -ContentType 'application/json' -Body $courtesyBody -Headers ($admin + @{ 'Idempotency-Key' = "$runId-courtesy" })
-Wait-ForStatus "$orders/$($courtesy.orderId)" $customer 'status' 'COMPLIMENTARY'
-Invoke-RestMethod -Uri "$inventory/$eventId/availability" -Headers $customer
+```bash
+curl http://localhost:18081/api/v1/orders/ORDER_ID \
+  --oauth2-bearer local-customer-1
+```
+
+Confirma antes de `expiresAt`. Después, repite el GET hasta que `status` sea `SOLD`.
+
+```bash
+curl -i -X POST http://localhost:18081/api/v1/orders/ORDER_ID/confirm \
+  --oauth2-bearer local-customer-1 \
+  -H 'Idempotency-Key: demo-confirmacion-001'
+
+curl http://localhost:18081/api/v1/orders/ORDER_ID \
+  --oauth2-bearer local-customer-1
+```
+
+**Emitir una cortesía y consultar disponibilidad.** Asigna la entrada `3` como administrador.
+
+```bash
+curl -i http://localhost:18081/api/v1/admin/complimentary-orders \
+  --oauth2-bearer local-admin \
+  -H 'Idempotency-Key: demo-cortesia-001' \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"EVENT_ID","ticketIds":["3"],"beneficiaryId":"local-customer-1","reason":"Invitación al evento"}'
+```
+
+Repite la primera consulta hasta que `status` sea `COMPLIMENTARY`. En disponibilidad verás `available=17`, `sold=2` y `complimentary=1`.
+
+```bash
+curl http://localhost:18081/api/v1/orders/COURTESY_ID \
+  --oauth2-bearer local-customer-1
+
+curl http://localhost:18082/api/v1/events/EVENT_ID/availability \
+  --oauth2-bearer local-customer-1
 ```
 
 ## Colección de Postman
@@ -131,9 +135,21 @@ La colección pasa por creación, reserva, reintento, confirmación, cortesía y
 
 `RESERVED` y `PENDING_CONFIRMATION` ocupan capacidad. `SOLD` es una venta final y `COMPLIMENTARY` es una asignación final que se cuenta por separado. La consulta de disponibilidad devuelve los contadores del inventario. La reserva definitiva se decide con las condiciones de escritura de Inventory.
 
+## Interacciones entre componentes
+
+![Mensajería y datos en AWS. Cuatro colas SQS conectan Catalog, Orders e Inventory. DynamoDB guarda los datos por servicio.](docs/diagramas/mensajeria-y-datos.png)
+
+1. **Alta del evento.** Catalog publica el comando para preparar sus entradas. Inventory numera las entradas y avisa a Catalog por SQS para cambiar el evento a `ACTIVE`.
+2. **Compra y confirmación.** Orders guarda la orden y su comando en una transacción. Devuelve `202` cuando SQS confirma la recepción. Inventory reserva las entradas con escrituras condicionales y comprueba el plazo al confirmar la compra.
+3. **Vencimiento y consulta.** Inventory libera la reserva al procesar el mensaje diferido. Un barrido cada minuto recupera vencimientos pendientes. Orders recibe los cambios por SQS y consulta a Inventory por HTTP para leer el estado actual de una reserva.
+
+- [Diagrama de flujo entre servicios](docs/arquitectura.md#servicios-y-comunicación)
+- [Diagrama de secuencia del alta de un evento](docs/arquitectura.md#alta-de-un-evento)
+- [Diagrama de secuencia de compra y vencimiento](docs/arquitectura.md#compra-y-vencimiento)
+
 ## Sustentación y operación
 
-- [Arquitectura y diagramas](docs/arquitectura.md)
+- [Arquitectura, mensajería y diagramas de secuencia](docs/arquitectura.md)
 - [Operación y pruebas locales](docs/operacion.md)
 - [Resultados por requisito](docs/evidencia.md)
 - Contratos [HTTP](contracts/openapi.json) y [SQS](contracts/asyncapi.json)
