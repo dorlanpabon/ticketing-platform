@@ -6,6 +6,7 @@ on:
   pull_request_target:
     branches: [develop, release, main]
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,7 +27,10 @@ jobs:
       - name: Checkout trusted policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          ref: >-
+            ${{ github.event.pull_request.base.sha ||
+                (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha) ||
+                'main' }}
           path: trusted
           fetch-depth: 0
           persist-credentials: false
@@ -88,7 +92,10 @@ jobs:
       - name: Checkout trusted build driver
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          ref: >-
+            ${{ github.event.pull_request.base.sha ||
+                (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha) ||
+                'main' }}
           path: trusted
           persist-credentials: false
       - name: Checkout candidate data

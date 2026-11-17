@@ -5,10 +5,10 @@ import os
 from pathlib import Path
 import re
 
-from quality import QualityError, branch_gate
+from quality import SHA, QualityError, branch_gate
 
 
-def context(event: dict, name: str, frozen: bool = False) -> dict:
+def context(event: dict, name: str, frozen: bool = False, *, ref: str = "", sha: str = "") -> dict:
     if name == "pull_request_target":
         pull = event["pull_request"]
         same = pull["head"]["repo"]["full_name"] == event["repository"]["full_name"]
@@ -23,12 +23,17 @@ def context(event: dict, name: str, frozen: bool = False) -> dict:
             raise QualityError("Unsupported push branch")
         return {"head": event["after"], "before": event.get("before", ""), "base": "", "pull": "",
                 "target": source, "source": source}
+    if name == "workflow_dispatch":
+        if ref != "refs/heads/main" or not SHA.fullmatch(sha):
+            raise QualityError("Manual quality validation requires main and a full commit SHA")
+        return {"head": sha, "before": sha, "base": "", "pull": "", "target": "main", "source": "main"}
     raise QualityError("Unsupported workflow event")
 
 
 if __name__ == "__main__":
     values = context(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8")),
-                     os.environ["GITHUB_EVENT_NAME"], os.environ.get("RELEASE_FROZEN") == "true")
+                     os.environ["GITHUB_EVENT_NAME"], os.environ.get("RELEASE_FROZEN") == "true",
+                     ref=os.environ.get("GITHUB_REF", ""), sha=os.environ.get("GITHUB_SHA", ""))
     for name in ("head", "base", "before"):
         if values[name] and not re.fullmatch(r"[0-9a-f]{40}", values[name]):
             raise SystemExit("Invalid Git identifier in event")
